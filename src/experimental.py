@@ -15,6 +15,11 @@
 import copy
 import itertools as it
 import tqdm
+import multiprocessing as mp
+import custom_mp
+
+print_combinations = False
+n_processes = 16
 
 
 class VReg:
@@ -101,6 +106,7 @@ class Intrinsic:
     def generate_gather(base_addr: str, vindex: list, scale=9):
         vindex = ""
         gather_ins = f"__m256 tmp = _mm256_i32gather_ps({base_addr},{vindex},{scale});"
+        return gather_ins
 
     def __init__(
         self,
@@ -234,60 +240,10 @@ for mem_addr in target_addr:
         new_ins.output_var = new_tmp_reg()
         all_load_candidates.append(new_ins)
 
-# print("All possible candidates:")
-# print(all_load_candidates)
-
 combinations = []
 # O(N^2*M^2)
 n_comb = 0
 combinations = []
-
-import multiprocessing as mp
-
-import sys
-
-# code based on: https://stackoverflow.com/a/57364423/2856041
-
-import multiprocessing.pool as mpp
-
-
-def istarmap(self, func, iterable, chunksize=1):
-    # For Python >=3.8
-    if sys.version_info[1] >= 8:
-        self._check_running()
-        if chunksize < 1:
-            raise ValueError("Chunksize must be 1+, not {0:n}".format(chunksize))
-
-        task_batches = mpp.Pool._get_tasks(func, iterable, chunksize)
-        result = mpp.IMapIterator(self)
-    # For Python <3.8
-    else:
-        if self._state != mpp.RUN:
-            raise ValueError("Pool not running")
-
-        if chunksize < 1:
-            raise ValueError("Chunksize must be 1+, not {0:n}".format(chunksize))
-
-    task_batches = mpp.Pool._get_tasks(func, iterable, chunksize)
-    if sys.version_info[1] >= 8:
-        result = mpp.IMapIterator(self)
-    else:
-        result = mpp.IMapIterator(self._cache)
-
-    self._taskqueue.put(
-        (
-            self._guarded_task_generation(result._job, mpp.starmapstar, task_batches),
-            result._set_length,
-        )
-    )
-    return (item for chunk in result for item in chunk)
-
-
-# Adding custom function to multiprocessing.pool.Pool
-mpp.Pool.istarmap = istarmap
-
-global global_combinations
-
 global_combinations = []
 
 
@@ -300,16 +256,16 @@ def get_combinations(combinations):
                 addr_loaded.append(out)
                 if ins not in new_comb:
                     new_comb.append(ins)
-    if len(addr_loaded) == len(target_addr) and new_comb not in global_combinations:
+    if len(addr_loaded) == len(target_addr):
         return new_comb
     return []
 
 
-for n in range(2, 4):
+for n in range(1, len(target_addr) + 1):
     niterations = sum(
         1 for _ in it.combinations_with_replacement(all_load_candidates, n)
     )
-    with mp.Pool(processes=16) as pool:
+    with mp.Pool(processes=n_processes) as pool:
         for output in tqdm.tqdm(
             pool.istarmap(
                 get_combinations,
@@ -318,11 +274,13 @@ for n in range(2, 4):
             ),
             total=niterations,
         ):
-            if output != []:
+            if output not in global_combinations:
                 global_combinations.append(output)
 
-for comb in global_combinations:
-    print("Combination")
-    for ins in comb:
-        print(f"    {ins}")
+
+if print_combinations:
+    for comb in global_combinations:
+        print("Combination")
+        for ins in comb:
+            print(f"    {ins}")
 print(len(global_combinations))
