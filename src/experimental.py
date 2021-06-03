@@ -53,6 +53,12 @@ class Mem:
         idx = self.idx == other.idx
         return p and idx
 
+    def __hash__(self):
+        return hash((self.p, self.idx))
+
+    def __lt__(self, other):
+        return eval(self.idx) < eval(other.idx)
+
     def eval_idx(self, value):
         try:
             return str(eval(self.idx.replace("N", value)))
@@ -102,6 +108,19 @@ class Intrinsic:
     def __repr__(self) -> str:
         return f"{self.__str__()} -> {self.output}"
 
+    def __eq__(self, other):
+        return (
+            self.name == other.name
+            and self.output == other.output
+            and self.args == other.args
+        )
+
+    def __lt__(self, other):
+        return self.output < other.output
+
+    def __hash__(self):
+        return hash((self.name, self.args, self.output))
+
     @staticmethod
     def generate_gather(base_addr: str, vindex: list, scale=9):
         vindex = ""
@@ -137,6 +156,14 @@ loads = [
         128,
         [Mem("p", "N+3"), Mem("p", "N+2"), Mem("p", "N+1"), Mem("p", "N+0")],
     ),
+    # Intrinsic(
+    #     "_mm_loadu_ps1",
+    #     [Mem("p", "N")],
+    #     "__m128",
+    #     "float",
+    #     128,
+    #     [Mem("p", "N+0"), Mem("p", "N+0"), Mem("p", "N+0"), Mem("p", "N+0")],
+    # ),
     Intrinsic(
         "_mm_load_ss",
         [Mem("p", "N")],
@@ -261,7 +288,7 @@ def get_combinations(combinations):
     return []
 
 
-for n in range(1, len(target_addr) + 1):
+for n in range(2, 6):
     niterations = sum(
         1 for _ in it.combinations_with_replacement(all_load_candidates, n)
     )
@@ -274,8 +301,8 @@ for n in range(1, len(target_addr) + 1):
             ),
             total=niterations,
         ):
-            if output not in global_combinations:
-                global_combinations.append(output)
+            # if output != [] and output not in global_combinations:
+            global_combinations.append(output)
 
 
 if print_combinations:
@@ -283,4 +310,7 @@ if print_combinations:
         print("Combination")
         for ins in comb:
             print(f"    {ins}")
-print(len(global_combinations))
+print(f"total {len(global_combinations)}")
+global_combinations.sort()
+print(f"cleaned total {len(list(k for k, _ in it.groupby(global_combinations)))}")
+# print(len(set(global_combinations)))
