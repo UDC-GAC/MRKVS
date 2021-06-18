@@ -247,14 +247,14 @@ def gen_all_load_candidates(target_addr):
     return all_load_candidates
 
 
-def combinations_with_replacement_loads(all_load_candidates, end=9):
-    # O(N^2*M^2)
+def combinations_with_replacement_loads(all_load_candidates, cl=2, end=9):
     global_combinations = []
-    for n in range(2, end):
+    for n in range(cl, end):
+        n_candidates = 5
         niterations = sum(
             1 for _ in it.combinations_with_replacement(all_load_candidates, n)
         )
-        if len(global_combinations) > 10:
+        if len(global_combinations) > n_candidates:
             return global_combinations
         with mp.Pool(processes=n_processes) as pool:
             for output in tqdm.tqdm(
@@ -268,7 +268,7 @@ def combinations_with_replacement_loads(all_load_candidates, end=9):
                 # if output != [] and output not in global_combinations:
                 if output != []:
                     global_combinations.append(output)
-                    if len(global_combinations) > 10:
+                    if len(global_combinations) > n_candidates:
                         pool.terminate()
                         return global_combinations
                 # bisect.insort(global_combinations, output)
@@ -369,21 +369,39 @@ for i in range(16):
         positions[-i + j] = (j + 1) * 16
 
     array.append(positions)
+    print(positions)
 
 target_addresses = []
+offset = 0
 for comb in array:
-    for offset in [0, 1, 2, 3, 8, 9, 11]:
-        target_addresses.append([Mem("p", f"{offset + elem}") for elem in comb])
+    # for offset in [0, 1, 2, 3, 8, 9, 11]:
+    new_comb = [Mem("p", f"{offset + elem}") for elem in comb]
+    target_addresses.append(new_comb)
+    print(new_comb)
+
+print(len(target_addresses))
+
+# import sys
+
+# sys.exit(0)
 
 
 def gen_shuffles(dst, A, B, mask="0b0000"):
     return f"{dst} = _mm256_shuffle_ps({A},{B},{mask});DO_NOT_TOUCH({dst});"
 
 
+def get_cl(addresses):
+    offsets = set()
+    for addr in addresses:
+        offsets.add(int(int(addr.idx) / 8))
+    return len(offsets)
+
+
 case_number = 0
 for target_addr in target_addresses:
     all_candidates = gen_all_load_candidates(target_addr)
-    global_combinations = combinations_with_replacement_loads(all_candidates, 9)
+    cl = get_cl(target_addr)
+    global_combinations = combinations_with_replacement_loads(all_candidates, cl, 9)
     if print_combinations:
         for comb in global_combinations:
             print("Combination")
@@ -409,11 +427,11 @@ for target_addr in target_addresses:
         new_comb = comb
         nloads = len(comb)
         for n in range(2, nloads):
-            new_comb.append("#ifdef MASK_SHUFFLE")
-            new_comb.append(f"mask = 256 >> {int(8 * random.random())};")
-            new_comb.append("#else")
-            new_comb.append(f"mask = {hex(int(256 * random.random()))};")
-            new_comb.append("#endif")
+            # new_comb.append("#ifdef MASK_SHUFFLE")
+            # new_comb.append(f"mask = 256 >> {int(8 * random.random())};")
+            # new_comb.append("#else")
+            # new_comb.append(f"mask = {hex(int(256 * random.random()))};")
+            # new_comb.append("#endif")
             A = (
                 f"_mm256_castps128_ps256({comb[n-1].output_var})"
                 if comb[n - 1].width == 128
