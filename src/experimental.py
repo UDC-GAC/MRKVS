@@ -250,7 +250,7 @@ def gen_all_load_candidates(target_addr):
 def combinations_with_replacement_loads(all_load_candidates, cl=2, end=9):
     global_combinations = []
     for n in range(cl, end):
-        n_candidates = 5
+        n_candidates = 1
         niterations = sum(
             1 for _ in it.combinations_with_replacement(all_load_candidates, n)
         )
@@ -261,7 +261,7 @@ def combinations_with_replacement_loads(all_load_candidates, cl=2, end=9):
                 pool.istarmap(
                     get_combinations,
                     zip(it.combinations_with_replacement(all_load_candidates, n)),
-                    chunksize=50000,
+                    chunksize=25000,
                 ),
                 total=niterations,
             ):
@@ -379,12 +379,6 @@ for comb in array:
     target_addresses.append(new_comb)
     print(new_comb)
 
-print(len(target_addresses))
-
-# import sys
-
-# sys.exit(0)
-
 
 def gen_shuffles(dst, A, B, mask="0b0000"):
     return f"{dst} = _mm256_shuffle_ps({A},{B},{mask});DO_NOT_TOUCH({dst});"
@@ -400,8 +394,11 @@ def get_cl(addresses):
 case_number = 0
 for target_addr in target_addresses:
     all_candidates = gen_all_load_candidates(target_addr)
+    print(f"length candidates = {len(all_candidates)}")
     cl = get_cl(target_addr)
-    global_combinations = combinations_with_replacement_loads(all_candidates, cl, 9)
+    global_combinations = combinations_with_replacement_loads(
+        all_candidates, cl, len(target_addr) + 1
+    )
     if print_combinations:
         for comb in global_combinations:
             print("Combination")
@@ -410,7 +407,7 @@ for target_addr in target_addresses:
     print(f"total {len(global_combinations)}")
     import time
 
-    from merge_sort_parallel import merge_sort_parallel as msort
+    # from merge_sort_parallel import merge_sort_parallel as msort
 
     start_time = time.monotonic()
     global_combinations = sorted(global_combinations)
