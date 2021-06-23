@@ -7,6 +7,12 @@ __pycache__/
 # C extensions
 *.so
 
+# Custom
+tmp*
+*.json
+*.txt
+*.c
+
 # Distribution / packaging
 .Python
 build/
