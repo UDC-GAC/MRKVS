@@ -186,28 +186,82 @@ def generate_shuffle_instructions(comb):
     return new_comb
 
 
-def get_number_slots_ordered(candidate, target):
-    v = 0
-    for n in range(len(target.idx)):
-        if candidate.idx[n] == target.idx[n]:
-            v += 1
+def get_number_slots_ordered(candidate, target: list):
+    v = {"full": 0, "low": 0, "high": 0}
+    max_size = max(len(candidate), len(target))
+    different_size = len(candidate) != len(target)
+    for n in range(max_size):
+        idx_candidate = n
+        if different_size and n >= len(candidate):
+            idx_candidate = n % len(candidate)
+        if candidate[idx_candidate] == target[n]:
+            if idx_candidate < n:
+                v["high"] += 1
+            else:
+                v["low"] += 1
     return v
 
 
-def generate_swizzle_instructions(comb, target_address):
-    new_comb = comb
+def get_blend_mask(target, source):
+    m = get_number_slots_ordered(target.output, source.output)
+    return "0x0"
+
+
+def get_shuffle_mask(target, source):
+    m = get_number_slots_ordered(target.output, source.output)
+    return "0x0"
+
+
+def get_cast(width, source):
+    if width == "256" and source.width != 256:
+        return f"_mm256_castps128_ps256({source.output_var})"
+    if width == "" and source.width != 128:
+        return f"_mm256_castps256_ps128({source.output_var})"
+
+
+def get_blend(target_address, target_register, source):
+    dst = target_register.output_var
+    width = "256" if dst.width == 256 else ""
+    a = target_register.output_var
+    b = get_cast(width, source)
+    if mask := get_blend_mask(target_address, source):
+        return f"{dst} = _mm{width}_blend_ps({a},{b},{mask});"
+    return None
+
+
+def get_shuffle(target_address, target_register, source):
+    dst = target_register.output_var
+    width = "256" if dst.width == 256 else ""
+    a = target_register.output_var
+    b = get_cast(width, source)
+    if mask := get_shuffle_mask(target_address, source):
+        return f"{dst} = _mm{width}_shuffle_ps({a},{b},{mask});"
+    return None
+
+
+def generate_swizzle_instructions(comb, target_address: list):
+    new_comb = copy.deepcopy(comb)
     main_ins = ""
     max_ordered = 0
     for load in comb:
-        m = get_number_slots_ordered(load.output, target_address)
-        if m > max_ordered:
+        output = copy.deepcopy(load.output)
+        output.reverse()
+        m = get_number_slots_ordered(output, target_address)
+        print(m)
+        if m["low"] > max_ordered:
             main_ins = load
-            max_ordered = m
+            max_ordered = m["low"]
 
-    inst_to_swizzle = comb - main_ins
-    for load in inst_to_swizzle:
-        new_comb.append(load)
-
+    comb.remove(main_ins)
+    # Are there any permutes?
+    # TODO: permutes
+    for load in comb:
+        # Can it blend, otherwise just shuffle it
+        if new_inst := get_blend(target_address, load, main_ins):
+            comb.append(new_inst)
+        else:
+            comb.append(get_shuffle(target_address, load, main_ins))
+    print(new_comb)
     return new_comb
 
 
@@ -286,30 +340,46 @@ def generate_new_cases() -> list:
     return target_addresses
 
 
+def generate_debug_case():
+    return [
+        [
+            Mem("p", "19"),
+            Mem("p", "18"),
+            Mem("p", "17"),
+            Mem("p", "16"),
+            Mem("p", "3"),
+            Mem("p", "2"),
+            Mem("p", "1"),
+            Mem("p", "0"),
+        ]
+    ]
+
+
 if __name__ == "__main__":
-    target_addresses = generate_new_cases()
+    # target_addresses = generate_new_cases()
+    target_addresses = generate_debug_case()
     case_number = 0
     # CORE for the brute force approach
     for target_addr in target_addresses:
+        target_addr.reverse()
+        # Step 1.1: generate load candidates
         all_candidates = gen_all_load_candidates(target_addr)
-        print(f"length candidates = {len(all_candidates)}")
+        print(all_candidates)
         cl = get_cl(target_addr)
+        # FIXME Step 1.2: generate all possible combinations with the
+        # candidates. This needs to be pruned somehow.
         global_combinations = combinations_loads(
-            all_candidates, cl, len(target_addr) + 1
+            all_candidates, 1, len(target_addr) + 1
         )
-        if print_combinations:
-            for comb in global_combinations:
-                print("Combination")
-                for ins in comb:
-                    print(f"    {ins}")
-        print(f"total {len(global_combinations)}")
-
+        print(global_combinations)
+        # Delete duplicates
         global_combinations = sorted(global_combinations)
         new_list = list(k for k, _ in it.groupby(global_combinations))
 
         comb_number = 0
-        # Ugly loop for creating new benchmarks
         for comb in new_list:
+            # Step 2: generate swizzle instructions for each combination
+            # considered in step 1.2
             new_comb = generate_swizzle_instructions(comb, target_addr)
             print(f"KERNEL {case_number}-{comb_number}")
             variables128 = []
