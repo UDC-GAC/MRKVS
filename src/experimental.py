@@ -203,13 +203,23 @@ def get_number_slots_ordered(candidate, target: list):
 
 
 def get_blend_mask(target, source):
-    m = get_number_slots_ordered(target.output, source.output)
-    return "0x0"
+    m = get_number_slots_ordered(
+        source.output,
+        target,
+    )
+    if m["low"] == 0:
+        return None
+    mask = 0x0
+    for n in range(len(target.output)):
+        if target[n] == source[n]:
+            mask |= 1 << n
+    return str(hex(mask))
 
 
 def get_shuffle_mask(target, source):
-    m = get_number_slots_ordered(target.output, source.output)
-    return "0x0"
+    # m = get_number_slots_ordered(target.output, source.output)
+    mask = 0
+    return str(hex(mask))
 
 
 def get_cast(width, source):
@@ -221,7 +231,7 @@ def get_cast(width, source):
 
 def get_blend(target_address, target_register, source):
     dst = target_register.output_var
-    width = "256" if dst.width == 256 else ""
+    width = "256" if target_register.width == 256 else ""
     a = target_register.output_var
     b = get_cast(width, source)
     if mask := get_blend_mask(target_address, source):
@@ -231,7 +241,7 @@ def get_blend(target_address, target_register, source):
 
 def get_shuffle(target_address, target_register, source):
     dst = target_register.output_var
-    width = "256" if dst.width == 256 else ""
+    width = "256" if target_register.width == 256 else ""
     a = target_register.output_var
     b = get_cast(width, source)
     if mask := get_shuffle_mask(target_address, source):
@@ -252,15 +262,20 @@ def generate_swizzle_instructions(comb, target_address: list):
             main_ins = load
             max_ordered = m["low"]
 
+    # TODO: check if main_ins size is equal to the target list, or if there are
+    # needed more than one register, e.g. in AVX2 packing 16 floats
+
     comb.remove(main_ins)
-    # Are there any permutes?
+    # Are there any permutes? Are there any inserts?
     # TODO: permutes
+    # TODO: inserts
     for load in comb:
         # Can it blend, otherwise just shuffle it
         if new_inst := get_blend(target_address, load, main_ins):
-            comb.append(new_inst)
+            new_comb.append(new_inst)
         else:
-            comb.append(get_shuffle(target_address, load, main_ins))
+            new_comb.append(get_shuffle(target_address, load, main_ins))
+        print(new_comb)
     print(new_comb)
     return new_comb
 
