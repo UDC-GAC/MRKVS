@@ -19,6 +19,7 @@ import multiprocessing as mp
 import os
 import json
 from intrinsics import Mem, Intrinsic
+from typing import Union
 import custom_mp
 import bisect
 import random
@@ -190,15 +191,18 @@ def get_number_slots_ordered(candidate, target: list):
     v = {"full": 0, "low": 0, "high": 0}
     max_size = max(len(candidate), len(target))
     different_size = len(candidate) != len(target)
-    for n in range(max_size):
-        idx_candidate = n
-        if different_size and n >= len(candidate):
-            idx_candidate = n % len(candidate)
-        if candidate[idx_candidate] == target[n]:
-            if idx_candidate < n:
-                v["high"] += 1
-            else:
-                v["low"] += 1
+    offset = 0
+    while sum(v.values()) == 0:
+        for n in range(offset, max_size):
+            idx_candidate = n - offset
+            if different_size and n >= len(candidate):
+                idx_candidate = n % len(candidate)
+            if candidate[idx_candidate] == target[n]:
+                if idx_candidate < n:
+                    v["high"] += 1
+                else:
+                    v["low"] += 1
+        offset = int(max_size / 2)
     return v
 
 
@@ -227,6 +231,7 @@ def get_cast(width, source):
         return f"_mm256_castps128_ps256({source.output_var})"
     if width == "" and source.width != 128:
         return f"_mm256_castps256_ps128({source.output_var})"
+    return source.output_var
 
 
 def get_blend(target_address, target_register, source):
@@ -249,10 +254,38 @@ def get_shuffle(target_address, target_register, source):
     return None
 
 
+def get_inserts(loads: list, target_address: list) -> Union[str, None]:
+    # _mm256_set_m128()
+    dst = "__m256 final_reg"
+    print(loads)
+    if len(loads) == 2:
+        out = copy.deepcopy(loads[0].output)
+        out.reverse()
+        m0 = get_number_slots_ordered(out, target_address)
+        out = copy.deepcopy(loads[1].output)
+        out.reverse()
+        m1 = get_number_slots_ordered(out, target_address)
+        var0 = get_cast("", loads[0])
+        var1 = get_cast("", loads[1])
+
+        if m0["low"] == 4 and m1["high"] == 4:
+            return f"{dst} = _mm256_set_m128({var1}, {var0});"
+
+        if m0["high"] == 4 and m1["low"] == 4:
+            return f"{dst} = _mm256_set_m128({var0}, {var1});"
+
+    return None
+
+
 def generate_swizzle_instructions(comb, target_address: list):
     new_comb = copy.deepcopy(comb)
     main_ins = ""
     max_ordered = 0
+
+    if inserts := get_inserts(comb, target_address):
+        new_comb.append(inserts)
+        return new_comb
+
     for load in comb:
         output = copy.deepcopy(load.output)
         output.reverse()
@@ -406,7 +439,9 @@ if __name__ == "__main__":
                     if ins.width == 256 and ins.output_var not in variables256:
                         variables256.append(ins.output_var)
                 else:
-                    variables256.append(ins.split(" = ")[0].strip())
+                    if ins != []:
+                        print(ins)
+                        variables256.append(ins.split(" = ")[0].strip())
 
             with open(f"kernels/kernel_{case_number}_{comb_number}.decl.c", "w") as f:
                 f.write("int mask;\n")
