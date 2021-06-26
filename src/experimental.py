@@ -338,14 +338,19 @@ def generate_swizzle_instructions(comb, target_address: list):
 
     # TODO: permute, it may imply inserts or
 
+    print(target_address)
     for load in comb:
         output = copy.deepcopy(load.output)
         output.reverse()
         m = get_number_slots_ordered(output, target_address)
+        print(m)
         if m["low"] > max_ordered:
             main_ins = load
             max_ordered = m["low"]
 
+    print(new_comb)
+    print(main_ins)
+    print(m)
     comb.remove(main_ins)
     for load in comb:
         # Can it blend, otherwise just shuffle it
@@ -516,8 +521,8 @@ def write_to_files(
 
 
 if __name__ == "__main__":
-    # target_addresses = generate_new_cases()
-    target_addresses = generate_debug_case()
+    target_addresses = generate_new_cases()
+    # target_addresses = generate_debug_case()
     case_number = 0
     # CORE for the brute force approach
     for target_addr in target_addresses:
