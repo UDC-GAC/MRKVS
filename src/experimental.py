@@ -52,6 +52,21 @@ loads = [
         "AVX2",
     ),
     Intrinsic(
+        "_mm_load_ps",
+        [Mem("p", "N")],
+        "__m128",
+        "float",
+        128,
+        [
+            Mem("p", "N+3"),
+            Mem("p", "N+2"),
+            Mem("p", "N+1"),
+            Mem("p", "N+0"),
+        ],
+        "AVX2",
+        True,
+    ),
+    Intrinsic(
         "_mm256_loadu_ps",
         [Mem("p", "N")],
         "__m256",
@@ -68,6 +83,25 @@ loads = [
             Mem("p", "N+0"),
         ],
         "AVX2",
+    ),
+    Intrinsic(
+        "_mm256_load_ps",
+        [Mem("p", "N")],
+        "__m256",
+        "float",
+        256,
+        [
+            Mem("p", "N+7"),
+            Mem("p", "N+6"),
+            Mem("p", "N+5"),
+            Mem("p", "N+4"),
+            Mem("p", "N+3"),
+            Mem("p", "N+2"),
+            Mem("p", "N+1"),
+            Mem("p", "N+0"),
+        ],
+        "AVX2",
+        True,
     ),
 ]
 
@@ -93,8 +127,12 @@ def new_tmp_reg():
     return n
 
 
-def get_ptr(mem):
+def get_ptr(mem: Mem):
     return f"&{mem.p}[{mem.idx}]"
+
+
+def is_aligned(mem: Mem, alignment=8):
+    return eval(mem.idx) % alignment != 0
 
 
 def get_combinations(combinations):
@@ -117,7 +155,11 @@ def gen_all_load_candidates(target_addr):
         base_idx = mem_addr.idx
         for load_ins in loads:
             test_output = Intrinsic.evaluate_output(load_ins, base_idx)
-            if mem_addr not in test_output:
+            if (
+                mem_addr not in test_output
+                or load_ins.aligned
+                and not is_aligned(mem_addr, 8)
+            ):
                 continue
             new_ins = copy.deepcopy(load_ins)
             new_ins.output = test_output
@@ -127,10 +169,9 @@ def gen_all_load_candidates(target_addr):
     return all_load_candidates
 
 
-def combinations_loads(all_load_candidates, cl=2, end=9):
+def combinations_loads(all_load_candidates, cl=2, end=9, n_candidates=1, csize=25000):
     global_combinations = []
     for n in range(cl, end):
-        n_candidates = 1
         niterations = sum(1 for _ in it.combinations(all_load_candidates, n))
         if len(global_combinations) > n_candidates:
             return global_combinations
@@ -139,7 +180,7 @@ def combinations_loads(all_load_candidates, cl=2, end=9):
                 pool.istarmap(
                     get_combinations,
                     zip(it.combinations(all_load_candidates, n)),
-                    chunksize=25000,
+                    chunksize=csize,
                 ),
                 total=niterations,
             ):
@@ -192,7 +233,7 @@ def get_number_slots_ordered(candidate, target: list):
     max_size = max(len(candidate), len(target))
     different_size = len(candidate) != len(target)
     offset = 0
-    while sum(v.values()) == 0:
+    while sum(v.values()) == 0 and offset <= max_size:
         for n in range(offset, max_size):
             idx_candidate = n - offset
             if different_size and n >= len(candidate):
@@ -202,7 +243,7 @@ def get_number_slots_ordered(candidate, target: list):
                     v["high"] += 1
                 else:
                     v["low"] += 1
-        offset = int(max_size / 2)
+        offset += 1
     return v
 
 
@@ -256,8 +297,7 @@ def get_shuffle(target_address, target_register, source):
 
 def get_inserts(loads: list, target_address: list) -> Union[str, None]:
     # _mm256_set_m128()
-    dst = "__m256 final_reg"
-    print(loads)
+    dst = "final_reg"
     if len(loads) == 2:
         out = copy.deepcopy(loads[0].output)
         out.reverse()
@@ -268,6 +308,12 @@ def get_inserts(loads: list, target_address: list) -> Union[str, None]:
         var0 = get_cast("", loads[0])
         var1 = get_cast("", loads[1])
 
+        if loads[0].width == 256:
+            dst = loads[0].output_var
+        if loads[1].width == 256:
+            dst = loads[1].output_var
+
+        # set_m128 => vinsertf128
         if m0["low"] == 4 and m1["high"] == 4:
             return f"{dst} = _mm256_set_m128({var1}, {var0});"
 
@@ -282,53 +328,58 @@ def generate_swizzle_instructions(comb, target_address: list):
     main_ins = ""
     max_ordered = 0
 
+    # TODO: check if main_ins size is equal to the target list, or if there are
+    # needed more than one register, e.g. in AVX2 packing 16 floats
+
+    # Inserts
     if inserts := get_inserts(comb, target_address):
         new_comb.append(inserts)
         return new_comb
+
+    # TODO: permute, it may imply inserts or
 
     for load in comb:
         output = copy.deepcopy(load.output)
         output.reverse()
         m = get_number_slots_ordered(output, target_address)
-        print(m)
         if m["low"] > max_ordered:
             main_ins = load
             max_ordered = m["low"]
 
-    # TODO: check if main_ins size is equal to the target list, or if there are
-    # needed more than one register, e.g. in AVX2 packing 16 floats
-
     comb.remove(main_ins)
-    # Are there any permutes? Are there any inserts?
-    # TODO: permutes
-    # TODO: inserts
     for load in comb:
         # Can it blend, otherwise just shuffle it
         if new_inst := get_blend(target_address, load, main_ins):
             new_comb.append(new_inst)
         else:
             new_comb.append(get_shuffle(target_address, load, main_ins))
-        print(new_comb)
-    print(new_comb)
+
     return new_comb
 
 
-def create_performance_bench(instructions) -> str:
-    content = "#include <immintrin.h>\n"
-    content += "#define restrict __restrict\n"
-    content += '#define NO_OPT(X) asm volatile("":"+x"(X)::);\n'
-    content += "void foo(float *restrict p) {\n"
-    content += '    __asm volatile("# LLVM-MCA-BEGIN foo");'
-    for instruction in instructions:
-        if type(instruction) == Intrinsic:
-            f.write(f"    {instruction.render()}\n")
+def create_performance_bench(variables128, variables256, instructions) -> str:
+    name_bench = "__tmp"
+    with open(f"{name_bench}.c", "w+") as f:
+        f.write("#include <immintrin.h>\n")
+        f.write("#define restrict __restrict\n")
+        f.write('#define NO_OPT(X) asm volatile("":"+x"(X)::)\n')
+        f.write("void foo(float *restrict p) {\n")
+        write_variables(f, variables128, variables256)
+        f.write('    __asm volatile("# LLVM-MCA-BEGIN foo");\n')
+        if type(instructions) == str:
+            f.write(f"    {instructions}\n")
         else:
-            f.write(f"    {instruction}\n")
-    content += '    __asm volatile("# LLVM-MCA-END foo");'
-    for instruction in instructions:
-        content += f"    NO_OPT({instruction.output_var})\n"
-    content += "}\n"
-    return content
+            for instruction in list(instructions):
+                if type(instruction) == Intrinsic:
+                    f.write(f"    {instruction.render()}\n")
+                else:
+                    f.write(f"    {instruction}\n")
+        f.write('    __asm volatile("# LLVM-MCA-END foo");\n')
+        for instruction in instructions:
+            if type(instruction) == Intrinsic:
+                f.write(f"    NO_OPT({instruction.output_var});\n")
+        f.write("\n}\n")
+    return name_bench
 
 
 def fix_json() -> None:
@@ -354,21 +405,19 @@ def fix_json() -> None:
         f.writelines(new_lines)
 
 
-def compute_performance(combination) -> tuple:
-    file_content = create_performance_bench(combination)
-    with open("__tmp.c", "w") as f:
-        f.write(file_content)
-    os.system("gcc -c -O3 -S -mavx2 __tmp.c")
-    os.system("llvm-mca-12 __tmp.s -json -o perf.json")
+def compute_performance(variables128, variables256, combination) -> tuple:
+    name_bench = create_performance_bench(variables128, variables256, combination)
+    os.system(f"gcc -c -O3 -S -mavx2 {name_bench}.c")
+    os.system(f"llvm-mca-12 {name_bench}.s -json -o perf.json")
     fix_json()
     with open("perf_fixed.json") as f:
         dom = json.loads(f.read())
     summ = dom[1]["SummaryView"]
     ipc = summ["IPC"]
-    avg_cycles = summ["Cycles"] / summ["Iterations"]
+    avg_cycles = summ["TotalCycles"] / summ["Iterations"]
 
     # Be clean
-    os.system("rm __tmp.c __tmp.s perf.json perf_fixed.json")
+    os.system(f"rm {name_bench}.* perf.json perf_fixed.json")
     return (ipc, avg_cycles)
 
 
@@ -403,6 +452,69 @@ def generate_debug_case():
     ]
 
 
+def write_variables(f, variables128, variables256):
+    if len(variables128) > 0:
+        f.write("    __m128 ")
+        for v in variables128[:-1]:
+            f.write(f"{v}, ")
+        f.write(f"{variables128[-1]};\n")
+    if len(variables256) > 0:
+        f.write("    __m256 ")
+        for v in variables256[:-1]:
+            f.write(f"{v}, ")
+        f.write(f"{variables256[-1]};\n")
+
+
+def write_decl(
+    case_number: int,
+    comb_number: int,
+    variables128: list,
+    variables256: list,
+):
+    with open(f"kernels/kernel_{case_number}_{comb_number}.decl.c", "w") as f:
+        write_variables(f, variables128, variables256)
+
+
+def write_kernel(case_number: int, comb_number: int, ins: list):
+    with open(f"kernels/kernel_{case_number}_{comb_number}.c", "w") as f:
+        for ins in new_comb:
+            if type(ins) == Intrinsic:
+                f.write(f"{ins.render()}\n")
+            else:
+                f.write(f"{ins}\n")
+
+
+def write_dce(
+    case_number: int,
+    comb_number: int,
+    variables128: list,
+    variables256: list,
+):
+    with open(f"kernels/kernel_{case_number}_{comb_number}.dce.c", "w") as f:
+        if len(variables256) > 0:
+            f.write("MARTA_AVOID_DCE(")
+            for v in variables256[:-1]:
+                f.write(f"{v}, ")
+            f.write(f"{variables256[-1]});\n")
+        if len(variables128) > 0:
+            f.write("MARTA_AVOID_DCE(")
+            for v in variables128[:-1]:
+                f.write(f"{v}, ")
+            f.write(f"{variables128[-1]});\n")
+
+
+def write_to_files(
+    case_number: int,
+    comb_number: int,
+    variables128: list,
+    variables256: list,
+    ins: list,
+):
+    write_decl(case_number, comb_number, variables128, variables256)
+    write_kernel(case_number, comb_number, ins)
+    write_dce(case_number, comb_number, variables128, variables256)
+
+
 if __name__ == "__main__":
     # target_addresses = generate_new_cases()
     target_addresses = generate_debug_case()
@@ -417,7 +529,7 @@ if __name__ == "__main__":
         # FIXME Step 1.2: generate all possible combinations with the
         # candidates. This needs to be pruned somehow.
         global_combinations = combinations_loads(
-            all_candidates, 1, len(target_addr) + 1
+            all_candidates, 1, len(target_addr) + 1, 10
         )
         print(global_combinations)
         # Delete duplicates
@@ -429,51 +541,31 @@ if __name__ == "__main__":
             # Step 2: generate swizzle instructions for each combination
             # considered in step 1.2
             new_comb = generate_swizzle_instructions(comb, target_addr)
-            print(f"KERNEL {case_number}-{comb_number}")
             variables128 = []
             variables256 = []
             for ins in new_comb:
                 if type(ins) == Intrinsic:
-                    if ins.width == 128 and ins.output_var not in variables128:
+                    if (
+                        ins.width == 128
+                        and ins.output_var not in variables128
+                        and ins.output_var not in variables256
+                    ):
                         variables128.append(ins.output_var)
-                    if ins.width == 256 and ins.output_var not in variables256:
+                    if (
+                        ins.width == 256
+                        and ins.output_var not in variables256
+                        and ins.output_var not in variables128
+                    ):
                         variables256.append(ins.output_var)
                 else:
-                    if ins != []:
-                        print(ins)
-                        variables256.append(ins.split(" = ")[0].strip())
+                    if var := ins.split(" = ")[0].strip():
+                        if var not in variables256 and var not in variables128:
+                            variables256.append(var)
 
-            with open(f"kernels/kernel_{case_number}_{comb_number}.decl.c", "w") as f:
-                f.write("int mask;\n")
-                if len(variables128) > 0:
-                    f.write("__m128 ")
-                    for v in variables128[:-1]:
-                        f.write(f"{v}, ")
-                    f.write(f"{variables128[-1]};\n")
-                if len(variables256) > 0:
-                    f.write("__m256 ")
-                    for v in variables256[:-1]:
-                        f.write(f"{v}, ")
-                    f.write(f"{variables256[-1]};\n")
-
-            with open(f"kernels/kernel_{case_number}_{comb_number}.c", "w") as f:
-                for ins in new_comb:
-                    if type(ins) == Intrinsic:
-                        f.write(f"{ins.render()}\n")
-                    else:
-                        f.write(f"{ins}\n")
-
-            with open(f"kernels/kernel_{case_number}_{comb_number}.dce.c", "w") as f:
-                if len(variables256) > 0:
-                    f.write("MARTA_AVOID_DCE(")
-                    for v in variables256[:-1]:
-                        f.write(f"{v}, ")
-                    f.write(f"{variables256[-1]});\n")
-                if len(variables128) > 0:
-                    f.write("MARTA_AVOID_DCE(")
-                    for v in variables128[:-1]:
-                        f.write(f"{v}, ")
-                    f.write(f"{variables128[-1]});\n")
-
+            write_to_files(
+                case_number, comb_number, variables128, variables256, new_comb
+            )
+            ipc, cycles = compute_performance(variables128, variables256, new_comb)
+            print(f"KERNEL {case_number}-{comb_number}: IPC {ipc}  Cyc {cycles}")
             comb_number += 1
         case_number += 1

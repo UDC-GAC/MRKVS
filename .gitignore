@@ -12,6 +12,10 @@ tmp*
 *.json
 *.txt
 *.c
+*.s
+*.out
+*.output
+*.dump
 
 # Distribution / packaging
 .Python

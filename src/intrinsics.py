@@ -113,6 +113,7 @@ class Intrinsic:
         width: int,
         output: list,
         cpuid="SSE4.2",
+        aligned=False,
     ):
         self.name = name
         self.args = args
@@ -121,4 +122,5 @@ class Intrinsic:
         self.width = width
         self.output = output
         self.output_var = ""
+        self.aligned = aligned
         self.cpuid = cpuid
