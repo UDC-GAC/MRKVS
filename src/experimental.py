@@ -19,14 +19,18 @@ import tqdm
 import multiprocessing as mp
 import os
 import json
-from intrinsics import Mem, Intrinsic
+from intrinsics import (
+    Mem,
+    Intrinsic,
+    MemList,
+    IntrinsicsList,
+    generate_debug_case,
+    generate_new_cases,
+)
 from typing import Union, List, Tuple
 import custom_mp
 import bisect
 import random
-
-IntrinsicsList = List[Intrinsic]
-MemList = List[Mem]
 
 
 print_combinations = False
@@ -108,18 +112,6 @@ loads = [
         "AVX2",
         True,
     ),
-]
-
-
-shuffles = [
-    Intrinsic(
-        "_mm_shuffle_ps",
-        [Mem("p", "N"), Mem("p", "N"), "IMM8"],
-        "__m128",
-        "float",
-        128,
-        [Mem("p", "N+3"), Mem("p", "N+2"), Mem("p", "N+1"), Mem("p", "N+0")],
-    )
 ]
 
 tmp_reg = 0
@@ -564,37 +556,6 @@ def compute_performance(
     # Be clean
     os.system(f"rm perf.json")
     return d
-
-
-def generate_new_cases() -> MemList:
-    array = []
-    for i in range(16):
-        positions = list(range(16))
-        for j in range(i):
-            positions[-i + j] = (j + 1) * 16
-        array.append(positions)
-
-    target_addresses = []
-    offset = 0
-    for comb in array:
-        new_comb = [Mem("p", f"{offset + elem}") for elem in comb]
-        target_addresses.append(new_comb)
-    return target_addresses
-
-
-def generate_debug_case() -> MemList:
-    return [
-        [
-            Mem("p", "19"),
-            Mem("p", "18"),
-            Mem("p", "17"),
-            Mem("p", "16"),
-            Mem("p", "3"),
-            Mem("p", "2"),
-            Mem("p", "1"),
-            Mem("p", "0"),
-        ]
-    ]
 
 
 def write_variables(f, variables128, variables256):

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import List
+
 
 class Mem:
     def __str__(self):
@@ -124,3 +126,38 @@ class Intrinsic:
         self.output_var = ""
         self.aligned = aligned
         self.cpuid = cpuid
+
+
+IntrinsicsList = List[Intrinsic]
+MemList = List[Mem]
+
+
+def generate_new_cases() -> MemList:
+    array = []
+    for i in range(16):
+        positions = list(range(16))
+        for j in range(i):
+            positions[-i + j] = (j + 1) * 16
+        array.append(positions)
+
+    target_addresses = []
+    offset = 0
+    for comb in array:
+        new_comb = [Mem("p", f"{offset + elem}") for elem in comb]
+        target_addresses.append(new_comb)
+    return target_addresses
+
+
+def generate_debug_case() -> MemList:
+    return [
+        [
+            Mem("p", "19"),
+            Mem("p", "18"),
+            Mem("p", "17"),
+            Mem("p", "16"),
+            Mem("p", "3"),
+            Mem("p", "2"),
+            Mem("p", "1"),
+            Mem("p", "0"),
+        ]
+    ]
