@@ -276,11 +276,16 @@ def get_cast(width, source):
     return source.output_var
 
 
-def get_blend(target_address, target_register, source):
-    dst = target_register.output_var
-    width = "256" if target_register.width == 256 else ""
-    a = target_register.output_var
+def get_blend(target_address, target_register, source, result=False):
+    #width = "256" if target_register.width == 256 else ""
+    width = "256"
     b = get_cast(width, source)
+    if result:
+        dst = "result"
+        a = "result"
+    else:
+        dst = target_register.output_var
+        a = target_register.output_var
     if mask := get_blend_mask(target_address, source):
         return f"{dst} = _mm{width}_blend_ps({a},{b},{mask});"
     return None
@@ -387,7 +392,7 @@ def get_swizzle_instruction(
         else:
             # permute + blend
             instruction.append(get_permute((idx_load, i), load))
-            instruction.append(get_blend(target_address, main_ins, load))
+            instruction.append(get_blend(target_address, main_ins, load, True))
 
     return instruction
 
@@ -419,6 +424,46 @@ def generate_swizzle_instructions(comb, target_address: list):
         new_comb += get_swizzle_instruction(target_address, load, main_ins)
     return new_comb
 
+def get_variables_from_comb(new_comb):
+    variables128 = []
+    variables256 = []
+    for ins in new_comb:
+        if type(ins) == Intrinsic:
+            if (
+                ins.width == 128
+                and ins.output_var not in variables128
+                and ins.output_var not in variables256
+            ):
+                variables128.append(ins.output_var)
+            if (
+                ins.width == 256
+                and ins.output_var not in variables256
+                and ins.output_var not in variables128
+            ):
+                variables256.append(ins.output_var)
+        elif ins != None:
+            var = ins.split("=")[0].strip()
+            if (
+                var != None
+                and var not in variables256
+                and var not in variables128
+            ):
+                variables256.append(var)
+    return variables128, variables256
+
+def get_gather(target_addr):
+    gathers = []
+    for i in range(0,len(target_addr),8):
+        signature = "_mm256_i32gather_ps"
+        index = "_mm256_set_epi32"
+        indices = ""
+        for addr in target_addr[i:i+8]:
+            indices += f"{addr.idx},"
+        index = f"{index}({indices[:-1]})"
+        dst = "result"
+        base_addr = get_ptr(target_addr[0])
+        gathers.append(f"{dst} = {signature}({base_addr},{index},4);\n")
+    return gathers
 
 def create_performance_bench(name_bench, variables128, variables256, instructions) -> str:
     with open(f"{name_bench}.c", "w+") as f:
@@ -438,6 +483,7 @@ def create_performance_bench(name_bench, variables128, variables256, instruction
                     f.write(f"    {instruction}\n")
         f.write('    __asm volatile("# LLVM-MCA-END foo");\n')
         for instruction in instructions:
+            f.write(f"    NO_OPT(result);\n")
             if type(instruction) == Intrinsic:
                 f.write(f"    NO_OPT({instruction.output_var});\n")
         f.write("\n}\n")
@@ -467,21 +513,25 @@ def fix_json() -> None:
         f.writelines(new_lines)
 
 
-def compute_performance(variables128, variables256, combination, case_number, comb_number) -> tuple:
-    name_bench = f"__tmp_{case_number}_{comb_number}"
+def compute_performance(variables128, variables256, combination, case_number, comb_number) -> dict:
+    name_bench = f"perf_kernels/__tmp_{case_number}_{comb_number}"
     create_performance_bench(name_bench, variables128, variables256, combination)
-    os.system(f"gcc -c -O3 -S -mavx2 {name_bench}.c")
-    os.system(f"llvm-mca-12 -iterations=1 {name_bench}.s -json -o perf.json")
+    os.system(f"gcc -c -O3 -mavx2 -march=cascadelake -mtune=cascadelake -S {name_bench}.c")
+    os.system(f"mv __tmp_{case_number}_{comb_number}.s perf_kernels/")
+    os.system(f"llvm-mca-12 -march=x86-64 -mcpu=cascadelake -iterations=1 {name_bench}.s -json -o perf.json")
     fix_json()
-    with open("perf_fixed.json") as f:
+    os.system(f"mv perf_fixed.json {name_bench}.json")
+    with open(f"{name_bench}.json") as f:
         dom = json.loads(f.read())
     summ = dom[1]["SummaryView"]
-    ipc = summ["IPC"]
-    avg_cycles = summ["TotalCycles"] / summ["Iterations"]
+    d = {}
+    d.update({"IPC":summ["IPC"]})
+    d.update({"Cycles":summ["TotalCycles"] / summ["Iterations"]})
+    d.update({"uOpsPerCycle":summ["uOpsPerCycle"]})
 
     # Be clean
-    os.system(f"rm perf.json perf_fixed.json")
-    return (ipc, avg_cycles)
+    os.system(f"rm perf.json")
+    return d
 
 
 def generate_new_cases() -> list:
@@ -538,7 +588,7 @@ def write_variables(f, variables128, variables256):
 
 def write_decl(
     case_number: int,
-    comb_number: int,
+    comb_number: Union[int,str],
     variables128: list,
     variables256: list,
 ):
@@ -548,20 +598,21 @@ def write_decl(
 
 def write_kernel(case_number: int, comb_number: int, ins: list):
     with open(f"kernels/kernel_{case_number}_{comb_number}.c", "w") as f:
-        for ins in new_comb:
-            if type(ins) == Intrinsic:
-                f.write(f"{ins.render()}\n")
-            elif type(ins) == str:
-                f.write(f"{ins}\n")
+        for instruction in new_comb:
+            if type(instruction) == Intrinsic:
+                f.write(f"{instruction.render()}\n")
+            elif type(instruction) == str:
+                f.write(f"{instruction}\n")
 
 
 def write_dce(
     case_number: int,
-    comb_number: int,
+    comb_number: Union[int,str],
     variables128: list,
     variables256: list,
 ):
     with open(f"kernels/kernel_{case_number}_{comb_number}.dce.c", "w") as f:
+        f.write(f"MARTA_AVOID_DCE(result);\n")
         if len(variables256) > 0:
             f.write("MARTA_AVOID_DCE(")
             for v in variables256[:-1]:
@@ -576,7 +627,7 @@ def write_dce(
 
 def write_to_files(
     case_number: int,
-    comb_number: int,
+    comb_number: Union[int,str],
     variables128: list,
     variables256: list,
     ins: list,
@@ -595,6 +646,7 @@ if __name__ == "__main__":
         target_addresses = generate_new_cases()
     case_number = 0
     # CORE for the brute force approach
+    d = {}
     for target_addr in target_addresses:
         target_addr.reverse()
         # Step 1.1: generate load candidates
@@ -614,35 +666,24 @@ if __name__ == "__main__":
             # Step 2: generate swizzle instructions for each combination
             # considered in step 1.2. This needs to be redone.
             new_comb = generate_swizzle_instructions(comb, target_addr)
-            variables128 = []
-            variables256 = []
-            for ins in new_comb:
-                if type(ins) == Intrinsic:
-                    if (
-                        ins.width == 128
-                        and ins.output_var not in variables128
-                        and ins.output_var not in variables256
-                    ):
-                        variables128.append(ins.output_var)
-                    if (
-                        ins.width == 256
-                        and ins.output_var not in variables256
-                        and ins.output_var not in variables128
-                    ):
-                        variables256.append(ins.output_var)
-                elif ins != None:
-                    var = ins.split("=")[0].strip()
-                    if (
-                        var != None
-                        and var not in variables256
-                        and var not in variables128
-                    ):
-                        variables256.append(var)
+            variables128, variables256 = get_variables_from_comb(new_comb)
 
             write_to_files(
                 case_number, comb_number, variables128, variables256, new_comb
             )
-            ipc, cycles = compute_performance(variables128, variables256, new_comb, case_number, comb_number)
-            print(f"KERNEL-{case_number}-{comb_number}: IPC {ipc}  Cyc {cycles}")
+            new_dict = compute_performance(variables128, variables256, new_comb, case_number, comb_number)
+            new_dict = {f"KERNEL-{case_number}-{comb_number}": new_dict}
+            d.update(new_dict)
+            print(new_dict)
             comb_number += 1
+        # DO GATHER
+        new_comb = get_gather(target_addr)
+        write_to_files(
+                case_number, "gather", variables128, variables256, new_comb
+            )
+        new_dict = compute_performance(variables128, variables256, new_comb, case_number, "gather")
+        new_dict = {f"KERNEL-{case_number}-gather":new_dict}
+        d.update(new_dict)
+        print(new_dict)
         case_number += 1
+    #print(f"{d}")
