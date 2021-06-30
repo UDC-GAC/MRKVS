@@ -252,18 +252,19 @@ def get_blend_mask(target, source):
         source.output,
         target,
     )
-    if m["low"] == 0:
+    if m["low"] == 0 and m["high"] == 0:
         return None
     mask = 0x0
-    for n in range(len(target.output)):
-        if target[n] == source[n]:
+    min_length = min(len(target), len(source.output))
+    for n in range(min_length):
+        if target[n] == source.output[n]:
             mask |= 1 << n
     return str(hex(mask))
 
 
-def get_shuffle_mask(target, source):
-    # m = get_number_slots_ordered(target.output, source.output)
-    mask = 0
+def get_shuffle_mask(positions: tuple):
+    idx_source, idx_target = positions
+    mask = idx_source << (2 * (idx_target % 4))
     return str(hex(mask))
 
 
@@ -285,19 +286,44 @@ def get_blend(target_address, target_register, source):
     return None
 
 
-def get_shuffle(target_address, target_register, source):
+def get_shuffle(positions: tuple, target_register, source):
     dst = target_register.output_var
     width = "256" if target_register.width == 256 else ""
     a = target_register.output_var
+    _, idx_target = positions
+    if idx_target in [0, 1, 4, 5]:
+        a = get_cast(width, source)
     b = get_cast(width, source)
-    if mask := get_shuffle_mask(target_address, source):
+    if mask := get_shuffle_mask(positions):
         return f"{dst} = _mm{width}_shuffle_ps({a},{b},{mask});"
+    return None
+
+
+def get_permute_index(positions):
+    idx_source, idx_target = positions
+    signature = "_mm256_set_epi32"
+    indices = ""
+    for i in range(7, -1, -1):
+        if i == idx_target:
+            indices += f"{idx_source},"
+        else:
+            indices += f"{i},"
+    return f"{signature}({indices[:-1]})"
+
+
+def get_permute(positions, source):
+    a = get_cast("256", source)
+    dst = source.output_var
+    if source.width == 128:
+        dst = "result";
+    if mask := get_permute_index(positions):
+        return f"{dst} = _mm256_permutevar8x32_ps({a},{mask});"
     return None
 
 
 def get_inserts(loads: list, target_address: list) -> Union[str, None]:
     # _mm256_set_m128()
-    dst = "final_reg"
+    dst = "result"
     if len(loads) == 2:
         out = copy.deepcopy(loads[0].output)
         out.reverse()
@@ -315,12 +341,55 @@ def get_inserts(loads: list, target_address: list) -> Union[str, None]:
 
         # set_m128 => vinsertf128
         if m0["low"] == 4 and m1["high"] == 4:
-            return f"{dst} = _mm256_set_m128({var1}, {var0});"
+            var0, var1 = var1, var0
 
-        if m0["high"] == 4 and m1["low"] == 4:
-            return f"{dst} = _mm256_set_m128({var0}, {var1});"
+        return f"{dst} = _mm256_set_m128({var0}, {var1});"
 
     return None
+
+
+def get_swizzle_instruction(
+    target_address: list, load: Intrinsic, main_ins: Intrinsic
+) -> list:
+    instruction = []
+
+    target_address.reverse()
+    output = load.output
+    output.reverse()
+
+    # find positions
+    positions = []
+    for i in range(len(target_address)):
+        if target_address[i] not in load.output:
+            continue
+        idx_load = output.index(target_address[i])
+        positions.append((idx_load, i))
+
+    already_blend = False
+    shuffles = []
+    for (idx_load, i) in positions:
+        # Can we just blend it?
+        if idx_load == i and not already_blend:
+            already_blend = True
+            instruction.append(get_blend(target_address, main_ins, load))
+        # if same_128b, then we could avoid shuffling
+        same_128b = int(idx_load / 4) == int(i / 4)
+        if same_128b:
+            # shuffle:
+            skip = False
+            for sidx, si in shuffles:
+                if idx_load == sidx * 2 and i == si * 2:
+                    skip = True
+            if skip:
+                continue
+            instruction.append(get_shuffle((idx_load, i), main_ins, load))
+            shuffles.append((idx_load, i))
+        else:
+            # permute + blend
+            instruction.append(get_permute((idx_load, i), load))
+            instruction.append(get_blend(target_address, main_ins, load))
+
+    return instruction
 
 
 def generate_swizzle_instructions(comb, target_address: list):
@@ -337,33 +406,21 @@ def generate_swizzle_instructions(comb, target_address: list):
         return new_comb
 
     # TODO: permute, it may imply inserts or
-
-    print(target_address)
     for load in comb:
         output = copy.deepcopy(load.output)
         output.reverse()
         m = get_number_slots_ordered(output, target_address)
-        print(m)
         if m["low"] > max_ordered:
             main_ins = load
             max_ordered = m["low"]
 
-    print(new_comb)
-    print(main_ins)
-    print(m)
     comb.remove(main_ins)
     for load in comb:
-        # Can it blend, otherwise just shuffle it
-        if new_inst := get_blend(target_address, load, main_ins):
-            new_comb.append(new_inst)
-        else:
-            new_comb.append(get_shuffle(target_address, load, main_ins))
-
+        new_comb += get_swizzle_instruction(target_address, load, main_ins)
     return new_comb
 
 
-def create_performance_bench(variables128, variables256, instructions) -> str:
-    name_bench = "__tmp"
+def create_performance_bench(name_bench, variables128, variables256, instructions) -> str:
     with open(f"{name_bench}.c", "w+") as f:
         f.write("#include <immintrin.h>\n")
         f.write("#define restrict __restrict\n")
@@ -377,7 +434,7 @@ def create_performance_bench(variables128, variables256, instructions) -> str:
             for instruction in list(instructions):
                 if type(instruction) == Intrinsic:
                     f.write(f"    {instruction.render()}\n")
-                else:
+                elif type(instruction) == str:
                     f.write(f"    {instruction}\n")
         f.write('    __asm volatile("# LLVM-MCA-END foo");\n')
         for instruction in instructions:
@@ -410,10 +467,11 @@ def fix_json() -> None:
         f.writelines(new_lines)
 
 
-def compute_performance(variables128, variables256, combination) -> tuple:
-    name_bench = create_performance_bench(variables128, variables256, combination)
+def compute_performance(variables128, variables256, combination, case_number, comb_number) -> tuple:
+    name_bench = f"__tmp_{case_number}_{comb_number}"
+    create_performance_bench(name_bench, variables128, variables256, combination)
     os.system(f"gcc -c -O3 -S -mavx2 {name_bench}.c")
-    os.system(f"llvm-mca-12 {name_bench}.s -json -o perf.json")
+    os.system(f"llvm-mca-12 -iterations=1 {name_bench}.s -json -o perf.json")
     fix_json()
     with open("perf_fixed.json") as f:
         dom = json.loads(f.read())
@@ -422,7 +480,7 @@ def compute_performance(variables128, variables256, combination) -> tuple:
     avg_cycles = summ["TotalCycles"] / summ["Iterations"]
 
     # Be clean
-    os.system(f"rm {name_bench}.* perf.json perf_fixed.json")
+    os.system(f"rm perf.json perf_fixed.json")
     return (ipc, avg_cycles)
 
 
@@ -458,6 +516,12 @@ def generate_debug_case():
 
 
 def write_variables(f, variables128, variables256):
+    variables128 = [
+        v for v in variables128 if (v != " " and v != "" and v.startswith("__"))
+    ]
+    variables256 = [
+        v for v in variables256 if (v != " " and v != "" and v.startswith("__"))
+    ]
     if len(variables128) > 0:
         f.write("    __m128 ")
         for v in variables128[:-1]:
@@ -467,7 +531,9 @@ def write_variables(f, variables128, variables256):
         f.write("    __m256 ")
         for v in variables256[:-1]:
             f.write(f"{v}, ")
-        f.write(f"{variables256[-1]};\n")
+        f.write(f"{variables256[-1]}, result;\n")
+    else:
+        f.write("    __m256 result;\n")
 
 
 def write_decl(
@@ -485,7 +551,7 @@ def write_kernel(case_number: int, comb_number: int, ins: list):
         for ins in new_comb:
             if type(ins) == Intrinsic:
                 f.write(f"{ins.render()}\n")
-            else:
+            elif type(ins) == str:
                 f.write(f"{ins}\n")
 
 
@@ -521,22 +587,24 @@ def write_to_files(
 
 
 if __name__ == "__main__":
-    target_addresses = generate_new_cases()
-    # target_addresses = generate_debug_case()
+    import sys
+
+    if len(sys.argv) >= 2:
+        target_addresses = generate_debug_case()
+    else:
+        target_addresses = generate_new_cases()
     case_number = 0
     # CORE for the brute force approach
     for target_addr in target_addresses:
         target_addr.reverse()
         # Step 1.1: generate load candidates
         all_candidates = gen_all_load_candidates(target_addr)
-        print(all_candidates)
         cl = get_cl(target_addr)
         # FIXME Step 1.2: generate all possible combinations with the
         # candidates. This needs to be pruned somehow.
         global_combinations = combinations_loads(
             all_candidates, 1, len(target_addr) + 1, 10
         )
-        print(global_combinations)
         # Delete duplicates
         global_combinations = sorted(global_combinations)
         new_list = list(k for k, _ in it.groupby(global_combinations))
@@ -544,7 +612,7 @@ if __name__ == "__main__":
         comb_number = 0
         for comb in new_list:
             # Step 2: generate swizzle instructions for each combination
-            # considered in step 1.2
+            # considered in step 1.2. This needs to be redone.
             new_comb = generate_swizzle_instructions(comb, target_addr)
             variables128 = []
             variables256 = []
@@ -562,15 +630,19 @@ if __name__ == "__main__":
                         and ins.output_var not in variables128
                     ):
                         variables256.append(ins.output_var)
-                else:
-                    if var := ins.split(" = ")[0].strip():
-                        if var not in variables256 and var not in variables128:
-                            variables256.append(var)
+                elif ins != None:
+                    var = ins.split("=")[0].strip()
+                    if (
+                        var != None
+                        and var not in variables256
+                        and var not in variables128
+                    ):
+                        variables256.append(var)
 
             write_to_files(
                 case_number, comb_number, variables128, variables256, new_comb
             )
-            ipc, cycles = compute_performance(variables128, variables256, new_comb)
-            print(f"KERNEL {case_number}-{comb_number}: IPC {ipc}  Cyc {cycles}")
+            ipc, cycles = compute_performance(variables128, variables256, new_comb, case_number, comb_number)
+            print(f"KERNEL-{case_number}-{comb_number}: IPC {ipc}  Cyc {cycles}")
             comb_number += 1
         case_number += 1
