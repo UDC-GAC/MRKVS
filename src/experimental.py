@@ -34,7 +34,7 @@ import random
 
 
 print_combinations = False
-n_processes = 16
+n_processes = 1
 
 
 loads = [
@@ -199,20 +199,20 @@ def get_cl(addresses: MemList) -> int:
 
 
 def get_number_slots_ordered(candidate: list, target: MemList) -> dict:
-    v = {"full": 0, "low": 0, "high": 0}
+    v = {"low": 0, "high": 0}
     max_size = max(len(candidate), len(target))
     different_size = len(candidate) != len(target)
     offset = 0
     while sum(v.values()) == 0 and offset <= max_size:
-        for n in range(offset, max_size):
+        for n in range(max_size - 1, offset - 1, -1):
             idx_candidate = n - offset
             if different_size and n >= len(candidate):
                 idx_candidate = n % len(candidate)
             if candidate[idx_candidate] == target[n]:
                 if idx_candidate < n:
-                    v["high"] += 1
-                else:
                     v["low"] += 1
+                else:
+                    v["high"] += 1
         offset += 1
     return v
 
@@ -227,17 +227,16 @@ def get_blend_mask(target: MemList, source: Intrinsic) -> Union[None, str]:
     mask = 0x0
     min_length = min(len(target), len(source.output))
     for n in range(min_length):
-        # if target[n].idx == source.output[n].idx:
-        if n == int(target[n].idx):
-            mask |= 1 << n
+        if target[n].idx == source.output[n].idx:
+            # if n == int(target[n].idx):
+            mask |= 1 << (-n + min_length - 1)
     format_hex = "0x{:02x}".format(mask)
-    # print(format_hex)
     return format_hex
 
 
-def get_shuffle_mask(positions: Tuple[int, int]) -> str:
+def get_shuffle_mask(positions: Tuple[int, int], size) -> str:
     idx_source, idx_target = positions
-    mask = idx_source << (2 * (idx_target % 4))
+    mask = idx_source << (2 * ((-idx_target + size) % 4))
     return str(hex(mask))
 
 
@@ -259,9 +258,21 @@ def get_blend(
         a = "result"
     else:
         dst = target_register.output_var
-        a = target_register.output_var
+        if target_register.width == 128:
+            dst = "result"
+        a = get_cast(width, target_register)
     if mask := get_blend_mask(target_address, source):
-        return f"{dst} = _mm{width}_blend_ps({a},{b},{mask});"
+        new_inst = Intrinsic(
+            f"_mm{width}_blend_ps",
+            [a, b, mask],
+            "__m256",
+            "float",
+            256,
+            [],
+            "AVX2",
+        )
+        new_inst.output_var = dst
+        return new_inst
     return None
 
 
@@ -275,7 +286,8 @@ def get_shuffle(
     if idx_target in [0, 1, 4, 5]:
         a = get_cast(width, source)
     b = get_cast(width, source)
-    if mask := get_shuffle_mask(positions):
+    size = len(source.output)
+    if mask := get_shuffle_mask(positions, size):
         return f"{dst} = _mm{width}_shuffle_ps({a},{b},{mask});"
     return None
 
@@ -287,16 +299,17 @@ def get_permute_index(
     signature = "_mm256_set_epi32"
     indices = ""
     memlist = []
+    offset_output = len(source.output) - 1
     for i in range(7, -1, -1):
         if i == idx_target:
             indices += f"{idx_source},"
-            memlist.append(source.output[idx_source])
+            memlist.append(source.output[-idx_source + offset_output])
         else:
             indices += f"{i},"
-            try:
-                memlist.append(source.output[i])
-            except IndexError:
+            if i >= len(source.output):
                 memlist.append(Mem("p", "-1"))
+            else:
+                memlist.append(source.output[-i + offset_output])
     return f"{signature}({indices[:-1]})", memlist
 
 
@@ -306,7 +319,7 @@ def get_permute(
     a = get_cast("256", source)
     dst = source.output_var
     if source.width == 128:
-        dst = "result"
+        dst = new_tmp_reg()
     if val := get_permute_index(positions, source):
         mask, output = val
         new_inst = Intrinsic(
@@ -324,15 +337,11 @@ def get_permute(
 
 
 def get_inserts(loads: list, target_address: list) -> Union[str, None]:
-    # FIXME: _mm256_set_m128()
+    # _mm256_set_m128()
     dst = "result"
     if len(loads) == 2:
-        out = copy.deepcopy(loads[0].output)
-        out.reverse()
-        m0 = get_number_slots_ordered(out, target_address)
-        out = copy.deepcopy(loads[1].output)
-        out.reverse()
-        m1 = get_number_slots_ordered(out, target_address)
+        m0 = get_number_slots_ordered(loads[0].output, target_address)
+        m1 = get_number_slots_ordered(loads[1].output, target_address)
         var0 = get_cast("", loads[0])
         var1 = get_cast("", loads[1])
 
@@ -354,43 +363,42 @@ def get_swizzle_instruction(
     target_address: MemList, load: Intrinsic, main_ins: Intrinsic
 ) -> list:
     instruction = []
-
-    target_address.reverse()
     output = load.output
-    output.reverse()
-
     # find positions
     positions = []
-    for i in range(len(target_address)):
-        if target_address[i] not in load.output:
+    for idx_target in range(len(target_address)):
+        if target_address[idx_target] not in output:
             continue
-        idx_load = output.index(target_address[i])
-        positions.append((idx_load, i))
+        idx_load = (len(output) - 1) - output.index(target_address[idx_target])
+        positions.append((idx_load, (len(target_address) - 1 - idx_target)))
 
     already_blend = False
     shuffles = []
-    for (idx_load, i) in positions:
+    for (idx_load, idx_target) in positions:
         # Can we just blend it?
-        if idx_load == i and not already_blend:
-            already_blend = True
-            instruction.append(get_blend(target_address, main_ins, load))
+        if idx_load == idx_target and not already_blend:
+            new_blend = get_blend(target_address, main_ins, load)
+            instruction.append(new_blend)
+            continue
         # if same_128b, then we could avoid shuffling
-        same_128b = int(idx_load / 4) == int(i / 4)
+        same_128b = int(idx_load / 4) == int(idx_target / 4)
         if same_128b:
             # shuffle:
-            skip = False
-            for sidx, si in shuffles:
-                if idx_load == sidx * 2 and i == si * 2:
-                    skip = True
-            if skip:
+            skip = [
+                1
+                for sidx, si in shuffles
+                if idx_load == sidx * 2 and idx_target == si * 2
+            ]
+            if sum(skip) > 0:
                 continue
-            instruction.append(get_shuffle((idx_load, i), main_ins, load))
-            shuffles.append((idx_load, i))
+            new_shuffle = get_shuffle((idx_load, idx_target), main_ins, load)
+            instruction.append(new_shuffle)
+            shuffles.append((idx_load, idx_target))
         else:
             # permute + blend
-            permute = get_permute((idx_load, i), load)
+            permute = get_permute((idx_load, idx_target), load)
             instruction.append(permute)
-            instruction.append(get_blend(target_address, permute, load, True))
+            instruction.append(get_blend(target_address, main_ins, permute, True))
 
     return instruction
 
@@ -412,9 +420,7 @@ def generate_swizzle_instructions(
 
     # TODO: permute, it may imply inserts or
     for load in comb:
-        output = copy.deepcopy(load.output)
-        output.reverse()
-        m = get_number_slots_ordered(output, target_address)
+        m = get_number_slots_ordered(load.output, target_address)
         if m["low"] > max_ordered:
             main_ins = load
             max_ordered = m["low"]
@@ -652,7 +658,7 @@ if __name__ == "__main__":
         # Naïve pruning: delete duplicates
         global_combinations = sorted(global_combinations)
         new_list = list(k for k, _ in it.groupby(global_combinations))
-
+        target_addr.reverse()
         comb_number = 0
         for comb in new_list:
             # Step 2: generate swizzle instructions for each combination
