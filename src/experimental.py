@@ -372,11 +372,10 @@ def get_swizzle_instruction(
         idx_load = (len(output) - 1) - output.index(target_address[idx_target])
         positions.append((idx_load, (len(target_address) - 1 - idx_target)))
 
-    already_blend = False
     shuffles = []
     for (idx_load, idx_target) in positions:
-        # Can we just blend it?
-        if idx_load == idx_target and not already_blend:
+        # Blending
+        if idx_load == idx_target:
             new_blend = get_blend(target_address, main_ins, load)
             instruction.append(new_blend)
             continue
@@ -418,7 +417,6 @@ def generate_swizzle_instructions(
         new_comb.append(inserts)
         return new_comb
 
-    # TODO: permute, it may imply inserts or
     for load in comb:
         m = get_number_slots_ordered(load.output, target_address)
         if m["low"] > max_ordered:
@@ -556,7 +554,7 @@ def compute_performance(
     summ = dom[1]["SummaryView"]
     d = {}
     d.update({"IPC": summ["IPC"]})
-    d.update({"Cycles": summ["TotalCycles"] / summ["Iterations"]})
+    d.update({"CyclesPerIteration": summ["TotalCycles"] / summ["Iterations"]})
     d.update({"uOpsPerCycle": summ["uOpsPerCycle"]})
 
     # Be clean
@@ -615,11 +613,11 @@ def write_dce(
 ) -> None:
     full_file_name = f"{file_name}{case_number}_{comb_number}{suffix}"
     with open(full_file_name, open_type) as f:
-        if len(variables256) > 0:
-            for v in variables256:
-                f.write(f"    MARTA_AVOID_DCE({v});\n")
         if len(variables128) > 0:
             for v in variables128[:-1]:
+                f.write(f"    MARTA_AVOID_DCE({v});\n")
+        if len(variables256) > 0:
+            for v in variables256:
                 f.write(f"    MARTA_AVOID_DCE({v});\n")
 
 
