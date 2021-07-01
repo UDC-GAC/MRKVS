@@ -205,15 +205,29 @@ def get_number_slots_ordered(candidate: list, target: MemList) -> dict:
     offset = 0
     while sum(v.values()) == 0 and offset <= max_size:
         for n in range(max_size - 1, offset - 1, -1):
+            # for n in range(offset, max_size, 1):
             idx_candidate = n - offset
+            if offset >= len(candidate):
+                continue
             if different_size and n >= len(candidate):
                 idx_candidate = n % len(candidate)
             if candidate[idx_candidate] == target[n]:
-                if idx_candidate < n:
-                    v["low"] += 1
-                else:
+                if n in range(0, int(len(target) / 2)):
                     v["high"] += 1
+                else:
+                    v["low"] += 1
         offset += 1
+    if sum(v.values()) == 0:
+        if target[0:4] == candidate[0:4]:
+            v["high"] = 4
+        if target[4:8] == candidate[0:4]:
+            v["low"] = 4
+        if not different_size:
+            if target[0:4] == candidate[4:8]:
+                v["high"] += 4
+            if target[4:8] == candidate[4:8]:
+                v["low"] += 4
+
     return v
 
 
@@ -338,23 +352,22 @@ def get_permute(
 
 def get_inserts(loads: list, target_address: list) -> Union[str, None]:
     # _mm256_set_m128()
-    dst = "result"
-    if len(loads) == 2:
-        m0 = get_number_slots_ordered(loads[0].output, target_address)
-        m1 = get_number_slots_ordered(loads[1].output, target_address)
-        var0 = get_cast("", loads[0])
-        var1 = get_cast("", loads[1])
+    low = None
+    high = None
+    for load in loads:
+        m = get_number_slots_ordered(load.output, target_address)
+        if m["low"] == 4:
+            low = load
+        if m["high"] == 4:
+            high = load
 
-        if loads[0].width == 256:
-            dst = loads[0].output_var
-        if loads[1].width == 256:
-            dst = loads[1].output_var
-
-        # set_m128 => vinsertf128
-        if m0["low"] == 4 and m1["high"] == 4:
-            var0, var1 = var1, var0
-
-        return f"{dst} = _mm256_set_m128({var0}, {var1});"
+    if low is not None and high is not None:
+        dst = "result"
+        if low.width == 256:
+            dst = low.output_var
+        if high.width == 256:
+            dst = high.output_var
+        return f"{dst} = _mm256_set_m128({get_cast('',high)}, {get_cast('',low)});"
 
     return None
 
