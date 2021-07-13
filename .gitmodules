@@ -1,0 +1,3 @@
+[submodule "src/x86-sat"]
+	path = src/sat
+	url = https://github.com/zwegner/x86-sat

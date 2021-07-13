@@ -205,7 +205,6 @@ def get_number_slots_ordered(candidate: list, target: MemList) -> dict:
     offset = 0
     while sum(v.values()) == 0 and offset <= max_size:
         for n in range(max_size - 1, offset - 1, -1):
-            # for n in range(offset, max_size, 1):
             idx_candidate = n - offset
             if offset >= len(candidate):
                 continue
