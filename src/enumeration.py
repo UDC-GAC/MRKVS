@@ -114,6 +114,12 @@ class Vector:
         self.elems = elems
 
 
+class Instruction:
+    def __init__(self, func, *args):
+        self.func = func
+        self.args = args
+
+
 class Program:
     # def compute_output(self):
     #     for ins in self.instructions:
@@ -202,21 +208,41 @@ def _mm256_permutevar_ps(a: list) -> dict:
 
 
 def get_permutevar8x32_index(n: int) -> str:
-    mask = "_mm256_set_epi32("
+    # mask = "_mm256_set_epi32("
+    mask = ""
     for i in range(7, -1, -1):
         val = (n >> 3 * i) & 0x7
         mask += f"{val},"
-    return mask[:-1] + ")"
+    return mask[:-1]
 
 
-def _mm256_permutevar8x32_ps(a: list) -> dict:
+def has_duplicates(output: list):
+    import numpy as np
+
+    return np.unique(output).size != len(output)
+
+
+def not_incremental(output: list):
+    for i in range(1, len(output)):
+        print(output[i])
+        if int(output[i - 1][-1]) > int(output[i][-1]):
+            return True
+    return False
+
+
+from tqdm import tqdm
+
+
+def _mm256_permutevar8x32_ps_pruned(a: list) -> dict:
     d = {}
-    for i in range(8 ** 8):
+    for i in tqdm(range(8 ** 8)):
         new_key = f"permutevar8x32_256_{i}"
         output = []
-        for j in range(elems):
+        for j in range(8):
             mask = (i >> 3 * j) & 0x7
             output.append(a[mask])
+        if has_duplicates(output):
+            continue
         output.reverse()
         d.update({Vector(output): new_key})
     return d
@@ -232,36 +258,40 @@ instructions = {}
 # instructions.update(_mm_permutevar_ps(A))
 # instructions.update(_mm256_blend_ps(A, _mm256_permutevar_ps(B)))
 
-# n = set()
-for p in _mm256_permutevar_ps(B):
-    count = int(_mm256_permutevar_ps(B)[p].split("_")[-1])
-    if count >= 4096:
-        break
-    print(count)
-    with open(f"brute_force/kernel_avx_1perm_1blend_{count}.c", "w") as f:
-        kernel = ""
-        mask_perm = get_permutevar8x32_index(count)
-        # for mask_blend in range(len(_mm256_blend_ps(A, p.elems))):
-        kernel += f"    tmp256 = _mm256_blend_ps(tmp1, _mm256_permutevar8x32_ps(tmp0, {mask_perm}), 0x0);\n"
-        kernel += "    DO_NOT_TOUCH(tmp0);\n"
-        kernel += "    DO_NOT_TOUCH(tmp1);\n"
-        f.write(kernel)
+PA = _mm256_permutevar8x32_ps_pruned(A)
+PB = _mm256_permutevar8x32_ps_pruned(B)
 
-# print(n)
-# target_swizzling = Vector(["b3", "b3", "a3", "a3"])
 
-# for ins in instructions:
-#     if instructions[ins] == target_swizzling:
-#         print(f"Found -> {ins} for {target_swizzling}")
+# count = 0
+# for i in tqdm(p):
+#     with open(f"brute_force/kernel_avx_1perm_{count}.c", "w") as f:
+#         kernel = ""
+#         index = int(p[i].split("_")[-1])
+#         mask_perm = get_permutevar8x32_index(index)
+#         kernel += f"    tmp256 = _mm256_permutevar8x32_ps(tmp0, {mask_perm});\n"
+#         kernel += f"    DO_NOT_TOUCH(tmp0);\n"
+#         f.write(kernel)
+#     count += 1
 
-# target_swizzling = Vector(["a3", "a3", "a3", "a3"])
+p = _mm256_permutevar8x32_ps_pruned(A)
+count = 0
+with open(f"tmp.csv", "w") as f:
+    f.write("IDX7,IDX6,IDX5,IDX4,IDX3,IDX2,IDX1,IDX0\n")
+    for i in tqdm(p):
+        index = int(p[i].split("_")[-1])
+        mask_perm = get_permutevar8x32_index(index)
+        f.write(mask_perm + "\n")
 
-# for ins in instructions:
-#     if instructions[ins] == target_swizzling:
-#         print(f"Found -> {ins} for {target_swizzling}")
-
-# target_swizzling = Vector(["a3", "a2", "a1", "a0"])
-
-# for ins in instructions:
-#     if instructions[ins] == target_swizzling:
-#         print(f"Found -> {ins} for {target_swizzling}")
+# for p in _mm256_permutevar_ps(B):
+#     count = int(_mm256_permutevar_ps(B)[p].split("_")[-1])
+#     if count >= 4096:
+#         break
+#     print(count)
+#     with open(f"brute_force/kernel_avx_1perm_1blend_{count}.c", "w") as f:
+#         kernel = ""
+#         mask_perm = get_permutevar8x32_index(count)
+#         # for mask_blend in range(len(_mm256_blend_ps(A, p.elems))):
+#         kernel += f"    tmp256 = _mm256_blend_ps(tmp1, _mm256_permutevar8x32_ps(tmp0, {mask_perm}), 0x0);\n"
+#         kernel += "    DO_NOT_TOUCH(tmp0);\n"
+#         kernel += "    DO_NOT_TOUCH(tmp1);\n"
+#         f.write(kernel)
