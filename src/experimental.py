@@ -29,12 +29,10 @@ from intrinsics import (
 )
 from typing import Union, List, Tuple
 import custom_mp
-import bisect
-import random
 
 
 print_combinations = False
-n_processes = 1
+n_processes = 8
 
 
 loads = [
@@ -653,8 +651,10 @@ if __name__ == "__main__":
 
     case_number = 0
     full_experiments = {}
+    print(f"total {len(target_addresses)}")
     for target_addr in target_addresses:
         target_addr.reverse()
+        print(target_addr)
         # TODO: prune based on e-graphs, could be done?
         # Step 1.1: generate load candidates
         all_candidates = gen_all_load_candidates(target_addr)
@@ -697,3 +697,8 @@ if __name__ == "__main__":
         full_experiments.update(new_dict)
         print(new_dict)
         case_number += 1
+    import pandas as pd
+
+    df = pd.DataFrame(full_experiments)
+    df = df.T
+    df.to_csv("testing.csv")
