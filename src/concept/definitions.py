@@ -52,13 +52,13 @@ class Mem:
         except TypeError:
             return self.idx
 
-    def __init__(self, p="p", idx=0):
+    def __init__(self, p="p", idx="0"):
         self.p = p
-        self.idx = idx
+        self.idx = str(idx)
 
 
-def identity(*args):
-    return args
+def identity(x):
+    return x
 
 
 class TmpVal:
@@ -84,6 +84,17 @@ class Reg:
     def get_slot(self, pos: int) -> Mem:
         return self.slots[pos]
 
+    def set_name(self, name: str) -> None:
+        self.varname = name
+
+    @staticmethod
+    def set_reg_type(size: int, data_type: str) -> str:
+        bits = 32 if data_type == "float" else 64
+        return f"__m{bits*size}"
+
+    def get_reg_type(self) -> str:
+        return self.reg_type
+
     def __str__(self):
         s = f"{self.varname} ["
         for arg in self.slots[:-1]:
@@ -93,9 +104,7 @@ class Reg:
         return f"{s}"
 
     def __repr__(self) -> str:
-        return (
-            f"{self.__str__()} ({self.output_func.__name__}, eval = {self.needs_eval})"
-        )
+        return f"{self.__str__()} eval = {self.needs_eval})"
 
     def __getitem__(self, key):
         return self.slots[key]
@@ -105,11 +114,14 @@ class Reg:
         slots: List[Any],
         output_func: FunctionType = identity,
         needs_eval: bool = False,
+        data_type: str = "float",
     ):
         self.varname = "__temp_reg"
         self.slots = slots
         self.output_func = output_func
         self.needs_eval = needs_eval
+        self.data_type = data_type
+        self.reg_type = Reg.set_reg_type(len(self.slots), self.data_type)
 
 
 class Imm:
@@ -141,7 +153,6 @@ class Intrinsic:
         new_args = []
         for item in out:
             if TmpVal == type(item):
-                print(item.pos, item.idx)
                 new_args.append(args[item.pos][item.idx])
             elif Mem == type(item):
                 new_args.append(Mem(item.p, item.eval_idx(value)))
@@ -161,11 +172,13 @@ class Intrinsic:
         else:
             for mem in self.output.slots:
                 output.append(Mem(mem.p, mem.eval_idx(value)))
-        print(output)
         return Reg(output)
 
     def compatible_cpuid(self, cpuid):
         return self.cpuid_order.index(cpuid) <= self.cpuid_order.index(self.cpuid)
+
+    def needs_eval(self):
+        return self.output.needs_eval
 
     def __str__(self):
         s = f"{self.name}("
@@ -220,6 +233,34 @@ class Intrinsic:
         self.output_var = ""
         self.aligned = aligned
         self.cpuid = cpuid
+
+
+class LoadIns(Intrinsic):
+    pass
+
+
+class BlendIns(Intrinsic):
+    pass
+
+
+class InsertIns(Intrinsic):
+    pass
+
+
+class MoveIns(Intrinsic):
+    pass
+
+
+class Instruction:
+    def __str__(self):
+        return f"{self.res} = {self.ins}"
+
+    def __repr__(self) -> str:
+        return f"{self.__str__()}"
+
+    def __init__(self, ins: Intrinsic, res: Reg):
+        self.ins = ins
+        self.res = res
 
 
 IntrinsicsList = List[Intrinsic]
