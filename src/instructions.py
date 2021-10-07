@@ -141,7 +141,8 @@ regex = "|".join(
 )
 intrinsics = parse_whitelist("sat/data-latest.xml", regex=regex)
 
-# intrinsics.update(dict_custom_ops)
+full_instruction_list = full_custom_ops_list + list(intrinsics.values())
+move_instruction_list = []
 
 # Wrappers
 set_4_float_elements = intrinsics["_mm_set_ps"]

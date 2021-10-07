@@ -1,3 +1,4 @@
+from re import I
 from typing import List
 from z3 import sat
 from sat.x86_sat.evaluate import check, Var, Call
@@ -5,7 +6,8 @@ from instructions import (
     load_instructions,
     _mv_insert_mem_ps,
     insert_blend_instructions,
-    # move_instructions,
+    full_instruction_list,
+    move_instruction_list,
     set_4_float_elements,
     set_8_float_elements,
 )
@@ -32,9 +34,11 @@ def max_width(dtype: str = "float", nelems: int = 4):
     return int(DATA_TYPE[dtype] * 8 * nelems)
 
 
-def print_instruction(signature, output, *args):
-    instruction = f"{signature}("
-    if not signature.startswith("_mv"):
+def print_instruction(ins, output, *args):
+    instruction = f"{ins.fn.name}("
+    if "load" in instruction:
+        instruction += "&"
+    if not instruction.startswith("_mv"):
         instruction = f"{output} = {instruction}"
     else:
         instruction += f"{output},"
@@ -48,7 +52,6 @@ def print_instruction(signature, output, *args):
 def get_register(args, arg, tmp_reg, solution):
     for tmp in tmp_reg:
         res, m = check(arg == tmp_reg[tmp])
-        # print(arg == tmp_reg[tmp], res)
         model_ok = True
         for i in m:
             model_ok = model_ok and m[i] == solution.model[i]
@@ -86,41 +89,74 @@ def generate_code(solution: Solution):
         tmp_reg[output] = ins
         reg_no += 1
         liveness[reg_no] = [n, n]
-        c_instructions.append(print_instruction(ins.fn.name, output, *args))
+        c_instructions.append(print_instruction(ins, output, *args))
     print(liveness)
 
 
 def get_all_combinations(
-    n_ins: int, packing, objective, dtype="float"
+    n_ins: int,
+    packing: List[int],
+    objective: Call,
+    dtype: str = "float",
+    min_combinations: int = 5,
 ) -> List[Solution]:
     solutions = []
 
-    def new_solutions(case: int, instructions: List[Call], packing: List) -> Solution:
+    def _check_new_solution(
+        new_ins: Call, instructions: List[Call], packing: List[int]
+    ):
         result, model = check(objective == instructions[-1])
         if result == sat:
             print("ALRIGHT: ", objective == instructions[-1], model)
             for i in instructions:
                 print("\t", i)
             return Solution(instructions, model)
-        else:
-            if case == n_ins:
-                return Solution()
-            # keep exploring
-            new_insert = _mv_insert_mem_ps(
-                instructions[-1], packing[0], Var("i" * case, "int")
-            )
-            instructions.append(new_insert)
-            return new_solutions(case + 1, instructions, packing[1:])
+        return None
 
+    def _generate_new_solutions_graph(
+        case: int, instructions: List[Call], packing: List
+    ) -> List[Solution]:
+        # Heuristic: if we have already consumed ALL instructions using memory
+        # operands, then we can limit the search space now
+        _candidates = (
+            full_instruction_list if len(packing) > 0 else move_instruction_list
+        )
+        _new_solutions = []
+        _pending = []
+        for ins in _candidates:
+            if (sol := _check_new_solution(ins, instructions, packing)) is not None:
+                _new_solutions.append(sol)
+                if len(_new_solutions) >= min_combinations:
+                    return _new_solutions
+            else:
+                _pending.append(ins)
+
+        # I guess this is **not** tail-recursion by definition,
+        for p in _pending:
+            _sub_new_solutions = _generate_new_solutions_graph(
+                case + 1, instructions + [p], packing[1:]
+            )
+            if len(_sub_new_solutions) != 0:
+                _new_solutions.append(_sub_new_solutions)
+
+        return _new_solutions
+
+    # Conceptually, this generates |load_instructions| roots. From them, we are
+    # going to create non-binary trees, and we would want to traverse them in
+    # level or natural order. This way we can easily decide whether to
+    # visit/generate next level, as it is a stop condition in our approach.
     for load in load_instructions:
         new_inst = load(packing[0])
         if new_inst.width > max_width(dtype, len(packing)):
             continue
-        new_sol = new_solutions(1, [new_inst], packing[1:])
-        if len(new_sol) == 0:
+        if (sol := _check_new_solution(1, [new_inst])) is not None:
+            solutions.append([sol])
+            continue
+        new_solutions = _generate_new_solutions_graph(1, [new_inst], packing[1:])
+        if len(new_solutions) == 0:
             print(f"\tNo solutions using {n_ins} instructions with seed {new_inst}")
         else:
-            solutions.append(new_sol)
+            solutions.append(new_solutions)
     return solutions
 
 
