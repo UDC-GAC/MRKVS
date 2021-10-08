@@ -14,6 +14,29 @@
 
 from z3 import *
 from sat.x86_sat.parse import *
+from enum import Enum
+
+
+class InsType(Enum):
+    ANY = 0
+    LOAD = 1
+    INSERT = 2
+    BLEND = 3
+    MOVE = 4
+
+
+class ArgsType(Enum):
+    ALLREG = 0
+    ALLMEM = 1
+    REG_REG = 2
+    REG_MEM = 3
+    MEM_REG = 4
+    MEM_MEM = 5
+    REG_REG_REG = 6
+
+
+class ArgsTypeException(Exception):
+    pass
 
 
 def val_to_array(val, elems=8):
@@ -36,6 +59,7 @@ _mm_load_ss = parse_operation(
     "__m128",
     "dst[127:96] := -1; dst[95:64] := -1; dst[63:32] := -1; dst[31:0] := a;",
 )
+_mm_load_ss.instype = InsType.LOAD
 _mm_loadu_ps = parse_operation(
     "_mm_loadu_ps",
     [("a", "float", "")],
@@ -43,6 +67,7 @@ _mm_loadu_ps = parse_operation(
     "__m128",
     "dst[127:96] := a+3; dst[95:64] := a+2; dst[63:32] := a+1; dst[31:0] := a;",
 )
+_mm_loadu_ps.instype = InsType.LOAD
 _mm256_loadu_ps = parse_operation(
     "_mm256_loadu_ps",
     [("a", "float", "")],
@@ -50,8 +75,7 @@ _mm256_loadu_ps = parse_operation(
     "__m256",
     "dst[255:224] := a+7; dst[223:192] := a+6; dst[191:160] := a+5; dst[159:128] := a+4; dst[127:96] := a+3; dst[95:64] := a+2; dst[63:32] := a+1; dst[31:0] := a;",
 )
-# _mm_load_ps = _mm_loadu_ps
-# _mm256_load_ps = _mm256_loadu_ps
+_mm256_loadu_ps.instype = InsType.LOAD
 
 load_instructions = [
     globals()[i] for i in dir() if i.startswith("_mm") or i.startswith("_mv")
@@ -86,6 +110,7 @@ FOR j := 0 to 3
 ENDFOR
     """,
 )
+_mv_insert_mem_ps.instype = InsType.INSERT
 
 _mv256_blend_mem_ps = parse_operation(
     "_mv256_blend_mem_ps",
@@ -104,6 +129,7 @@ ENDFOR
 dst[MAX:256] := 0
     """,
 )
+_mv256_blend_mem_ps.instype = InsType.BLEND
 
 _mv_blend_mem_ps = parse_operation(
     "_mv_blend_mem_ps",
@@ -121,6 +147,8 @@ FOR j := 0 to 3
 ENDFOR
     """,
 )
+_mv_blend_mem_ps.instype = InsType.BLEND
+
 
 insert_blend_instructions = [
     globals()[i] for i in dir() if "insert" in i or "blend" in i
@@ -133,16 +161,44 @@ full_custom_ops_list = [
 
 regex = "|".join(
     [
-        r"_mm(256|)_set_ps",
         r"_mm(256|)_blend_ps",
         r"_mm_insert_ps",
         r"_mm256_insertf128_ps",
+        r"_mm_move(hl|lh)_ps",
     ]
 )
 intrinsics = parse_whitelist("sat/data-latest.xml", regex=regex)
 
 full_instruction_list = full_custom_ops_list + list(intrinsics.values())
-move_instruction_list = []
+
+
+def type_instruction(ins):
+    ins.argstype = ArgsType.ALLREG
+    if "load" in ins.name and not "loadh" in ins.name and not "loadl" in ins.name:
+        ins.instype = InsType.LOAD
+    elif "blend" in ins.name:
+        ins.instype = InsType.BLEND
+    elif "insert" in ins.name:
+        ins.instype = InsType.INSERT
+    elif "loadh" in ins.name or "loadl" in ins.name or "mov" in ins.name:
+        ins.instype = InsType.MOVE
+    else:
+        ins.instype = InsType.ANY
+    if "mem" in ins.name:
+        ins.argstype = ArgsType.REG_MEM
+    ins.hasimm = False
+    if "imm" in ins.params[-1].name:
+        ins.hasimm = True
+    return ins
+
+
+full_instruction_list = [type_instruction(x) for x in full_instruction_list]
+
+move_instruction_list = [
+    ins for ins in full_instruction_list if ins.instype == InsType.MOVE
+]
+
+intrinsics = parse_whitelist("sat/data-latest.xml", regex=r"_mm(256|)_set_ps$")
 
 # Wrappers
 set_4_float_elements = intrinsics["_mm_set_ps"]
