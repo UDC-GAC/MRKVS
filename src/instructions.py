@@ -14,29 +14,7 @@
 
 from z3 import *
 from sat.x86_sat.parse import *
-from enum import Enum
-
-
-class InsType(Enum):
-    ANY = 0
-    LOAD = 1
-    INSERT = 2
-    BLEND = 3
-    MOVE = 4
-
-
-class ArgsType(Enum):
-    ALLREG = 0
-    ALLMEM = 1
-    REG_REG = 2
-    REG_MEM = 3
-    MEM_REG = 4
-    MEM_MEM = 5
-    REG_REG_REG = 6
-
-
-class ArgsTypeException(Exception):
-    pass
+from sat.x86_sat.evaluate import ArgsType, InsType, ArgsTypeException
 
 
 def val_to_array(val, elems=8):

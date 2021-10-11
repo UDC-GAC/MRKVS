@@ -25,7 +25,7 @@ def max_width(dtype: str = "float", nelems: int = 4):
     return int(DATA_TYPE[dtype] * 8 * nelems)
 
 
-class Solution:
+class Candidate:
     def __len__(self):
         return len(self.instructions)
 
@@ -49,44 +49,47 @@ def print_instruction(ins, output, *args):
     return instruction
 
 
-def get_register(args, arg, tmp_reg, solution):
+def get_register(args, arg, tmp_reg, candidate):
     for tmp in tmp_reg:
         res, m = check(arg == tmp_reg[tmp])
         if res == unsat:
             continue
         model_ok = True
         for i in m:
-            model_ok = model_ok and m[i] == solution.model[i]
+            model_ok = model_ok and m[i] == candidate.model[i]
         if sat == res and model_ok:
             args += [tmp]
             break
     return args
 
 
-def get_arguments(ins, tmp_reg, solution):
+def get_arguments(ins, tmp_reg, candidate):
     args = []
     for arg in ins.args:
         if type(arg) == Var:
-            args += [solution.model[arg.name]]
+            try:
+                args += [candidate.model[arg.name]]
+            except Exception:
+                pass
             continue
         if type(arg) != Call:
             args += [f"p[{arg}]"]
             continue
         n_args = len(args)
-        args = get_register(args, arg, tmp_reg, solution)
+        args = get_register(args, arg, tmp_reg, candidate)
         assert n_args + 1 == len(args)
     return args
 
 
-def generate_code(solution: Solution):
+def generate_code(candidate: Candidate):
     reg_no = 0
     tmp_reg = {}
     liveness = {}
-    instructions = solution.instructions
+    instructions = candidate.instructions
     c_instructions = []
     for n in range(len(instructions)):
         ins = instructions[n]
-        args = get_arguments(ins, tmp_reg, solution)
+        args = get_arguments(ins, tmp_reg, candidate)
         output = f"r{reg_no}"
         tmp_reg[output] = ins
         reg_no += 1
