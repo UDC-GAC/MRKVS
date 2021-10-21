@@ -20,7 +20,7 @@ from sat.x86_sat.evaluate import ArgsType, InsType, ArgsTypeException
 def val_to_array(val, elems=8):
     offset_32b = 0xFFFFFFFF
     arr = []
-    if type(val) == str:
+    if isinstance(val, str):
         val = eval(val)
     for i in range(elems):
         new_val = val >> 32 * i
@@ -30,15 +30,15 @@ def val_to_array(val, elems=8):
 
 
 # Custom defined instructions for MACVETH
-_mm_load_ss = parse_operation(
+_mm_load_ss = ParseOperation(
     "_mm_load_ss",
     [("a", "float", "")],
     "dst",
     "__m128",
-    "dst[127:96] := -1; dst[95:64] := -1; dst[63:32] := -1; dst[31:0] := a;",
+    "dst[127:96] := 0; dst[95:64] := 0; dst[63:32] := 0; dst[31:0] := a;",
 )
 _mm_load_ss.instype = InsType.LOAD
-_mm_loadu_ps = parse_operation(
+_mm_loadu_ps = ParseOperation(
     "_mm_loadu_ps",
     [("a", "float", "")],
     "dst",
@@ -46,7 +46,42 @@ _mm_loadu_ps = parse_operation(
     "dst[127:96] := a+3; dst[95:64] := a+2; dst[63:32] := a+1; dst[31:0] := a;",
 )
 _mm_loadu_ps.instype = InsType.LOAD
-_mm256_loadu_ps = parse_operation(
+_mm_loadl_pi = ParseOperation(
+    "_mm_loadl_pi",
+    [("a", "__m128", ""), ("mem", "float", "")],
+    "dst",
+    "__m128",
+    "dst[127:96] := a[127:96]; dst[95:64] := a[95:64]; dst[63:32] := mem+1; dst[31:0] := mem;",
+)
+_mm_loadl_pi.instype = InsType.LOAD
+_mm_loadh_pi = ParseOperation(
+    "_mm_loadh_pi",
+    [("a", "__m128", ""), ("mem", "float", "")],
+    "dst",
+    "__m128",
+    "dst[127:96] := mem+3; dst[95:64] := mem+2; dst[63:32] := a[63:32]; dst[31:0] := a[31:0];",
+)
+_mm_loadh_pi.instype = InsType.LOAD
+_mm_maskload_ps = ParseOperation(
+    "_mm_maskload_ps",
+    [("a", "float", ""), ("mask", "__m128i", "")],
+    "dst",
+    "__m128",
+    """
+FOR j := 0 to 3
+i := j*32
+IF mask[i+31]
+    dst[i+31:i] := a+j
+ELSE
+    dst[i+31:i] := 0
+FI
+ENDFOR
+dst[MAX:128] := 0
+""",
+)
+_mm_maskload_ps.instype = InsType.LOAD
+_mm_maskload_ps.maskvec = True
+_mm256_loadu_ps = ParseOperation(
     "_mm256_loadu_ps",
     [("a", "float", "")],
     "dst",
@@ -59,7 +94,7 @@ load_instructions = [
     globals()[i] for i in dir() if i.startswith("_mm") or i.startswith("_mv")
 ]
 
-_mv_insert_mem_ps = parse_operation(
+_mv_insert_mem_ps = ParseOperation(
     "_mv_insert_mem_ps",
     [("a", "__m128", ""), ("b", "float", ""), ("imm8", "const int", "")],
     "dst",
@@ -90,7 +125,7 @@ ENDFOR
 )
 _mv_insert_mem_ps.instype = InsType.INSERT
 
-_mv256_blend_mem_ps = parse_operation(
+_mv256_blend_mem_ps = ParseOperation(
     "_mv256_blend_mem_ps",
     [("a", "__m256", ""), ("b", "float", ""), ("imm8", "const int", "")],
     "dst",
@@ -109,7 +144,7 @@ dst[MAX:256] := 0
 )
 _mv256_blend_mem_ps.instype = InsType.BLEND
 
-_mv_blend_mem_ps = parse_operation(
+_mv_blend_mem_ps = ParseOperation(
     "_mv_blend_mem_ps",
     [("a", "__m128", ""), ("b", "float", ""), ("imm8", "const int", "")],
     "dst",
@@ -152,13 +187,13 @@ full_instruction_list = full_custom_ops_list + list(intrinsics.values())
 
 def type_instruction(ins):
     ins.argstype = ArgsType.ALLREG
-    if "load" in ins.name and not "loadh" in ins.name and not "loadl" in ins.name:
+    if "load" in ins.name:
         ins.instype = InsType.LOAD
     elif "blend" in ins.name:
         ins.instype = InsType.BLEND
     elif "insert" in ins.name:
         ins.instype = InsType.INSERT
-    elif "loadh" in ins.name or "loadl" in ins.name or "mov" in ins.name:
+    elif "mov" in ins.name:
         ins.instype = InsType.MOVE
     else:
         ins.instype = InsType.ANY
@@ -167,6 +202,12 @@ def type_instruction(ins):
     ins.hasimm = False
     if "imm" in ins.params[-1].name:
         ins.hasimm = True
+    ins.maskvec = False
+    if "mask" in ins.params[-1].name:
+        ins.maskvec = True
+    ins.needsregister = False
+    if "loadh" in ins.name or "loadl" in ins.name:
+        ins.needsregister = True
     return ins
 
 
@@ -176,7 +217,7 @@ move_instruction_list = [
     ins for ins in full_instruction_list if ins.instype == InsType.MOVE
 ]
 
-intrinsics = parse_whitelist("sat/data-latest.xml", regex=r"_mm(256|)_set_ps$")
+intrinsics = parse_whitelist("sat/data-latest.xml", regex=r"_mm(256|)_set_ps")
 
 # Wrappers
 set_4_float_elements = intrinsics["_mm_set_ps"]
