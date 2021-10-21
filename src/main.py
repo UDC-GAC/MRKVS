@@ -67,12 +67,27 @@ def _generate_new_candidate(
     __argstype = _new_ins.argstype
     __hasimm = _new_ins.hasimm
     __hasmaskvec = _new_ins.maskvec
+    _unsat_candidates = []
     if __instype == InsType.LOAD:
         args = [packing[case]]
         if __hasmaskvec:
             args += [Var("mask_" + ("i" * case), "__m128i")]
-        if _new_inst.needsregister:
-            
+        if _new_ins.needsregister:
+            for c in instructions:
+                new_args = [c] + args
+                if (__len_inst >= packing.min_instructions) and (
+                    (
+                        sol := _check_candidate(
+                            _new_ins(*new_args), instructions, objective
+                        )
+                    )
+                    is not unsat
+                ):
+                    return sat, sol
+                else:
+                    _unsat_candidates.append(_new_ins(*new_args))
+            return unsat, _unsat_candidates
+
         if __len_inst >= packing.min_instructions and (
             (sol := _check_candidate(_new_ins(*args), instructions, objective))
             is not unsat
@@ -82,7 +97,7 @@ def _generate_new_candidate(
 
     _i = Var("i" * case, "int")
     imm = []
-    _unsat_candidates = []
+
     if __instype in [InsType.BLEND, InsType.INSERT] and __hasimm:
         imm = [_i]
     if __argstype == ArgsType.ALLREG:
@@ -210,7 +225,7 @@ def find_all_candidates(
         if load.maskvec:
             args += [Var("mask_i", f"__m{__width}i")]
         if load.needsregister:
-            args =  [Var("aux", f"__m{__width}")] + args
+            args = [Var("aux", f"__m{__width}")] + args
         _new_inst = load(*args)
         # Check if root satisfies condition
         _val = _check_candidate(_new_inst, [], objective)

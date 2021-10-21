@@ -44,7 +44,7 @@ class PackingT:
         dtype: str = "float",
     ):
         self.packing = packing
-        self.nnz = len(packing) - packing.count(-1)
+        self.nnz = len(packing) - packing.count(0)
         self.vector_size = len(self.packing)
         self.contiguity = contiguity
         self.min_instructions = self.contiguity.count(0)
