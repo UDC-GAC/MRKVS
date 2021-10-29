@@ -53,6 +53,8 @@ def _check_candidate(
     result, model = check(objective == new_product)
     dprint(objective == new_product)
     if result == sat:
+        if "aux" in model and int(model["aux"], base=16) != 0x0:
+            return unsat
         print("[DEBUG] Candidate: ", objective == new_product, model)
         return Candidate(instructions + [new_product], model)
     return unsat
@@ -143,7 +145,34 @@ def _generate_new_candidate(
     return unsat, _unsat_candidates
 
 
-def get_instructions_list(case: int, instructions: List[Call], packing: PackingT):
+def _prune_ld_ins(packing: PackingT) -> list:
+    new_list = []
+    for load in load_instructions:
+        __width = load.width
+        # It does not make sense using 256 bits instructions when packing only
+        # 4 elements
+        if __width > packing.c_max_width:
+            continue
+        if sum(packing.contiguity) == 0:
+            if not load.name.endswith("ss"):
+                continue
+        else:
+            if (len(packing.contiguity) >= 1 and packing.contiguity[-1] == 0) or (
+                len(packing.contiguity) >= 5 and packing.contiguity[-5] == 0
+            ):
+                if "loadl" in load.name:
+                    continue
+            if (len(packing.contiguity) >= 3 and packing.contiguity[-3] == 0) or (
+                len(packing.contiguity) == 7 and packing.contiguity[-7] == 0
+            ):
+                if "loadh" in load.name:
+                    continue
+        new_list.append(load)
+    assert len(new_list) > 0
+    return new_list
+
+
+def _prune_ins_list(case: int, instructions: List[Call], packing: PackingT):
     l = []
     if case >= len(packing):
         return move_instruction_list
@@ -155,13 +184,21 @@ def get_instructions_list(case: int, instructions: List[Call], packing: PackingT
         if "blend" in ins.fn.name:
             n_blends += 1
     for ins in full_instruction_list:
-        if ins.instype == InsType.BLEND and (
-            n_blends > 1 or sum(packing.contiguity) == 0
-        ):
+        if ins.instype == InsType.LOAD:
             continue
+        if sum(packing.contiguity) == 0:
+            if ins.instype == InsType.BLEND and (n_blends > 1):
+                continue
+            if (
+                ins.instype == InsType.LOAD
+                and "_ps" in ins.name
+                and not "mask" in ins.name
+            ):
+                continue
         if ins.instype == InsType.INSERT and n_inserts >= packing.nnz - 1:
             continue
         l.append(ins)
+    l.extend(_prune_ld_ins(packing))
     return l
 
 
@@ -170,7 +207,7 @@ def _generate_new_candidates_forest(
 ) -> List[Candidate]:
     # Heuristic: if we have already consumed ALL instructions using memory
     # operands, then we can limit the search space now
-    _candidates = get_instructions_list(case, instructions, packing)
+    _candidates = _prune_ins_list(case, instructions, packing)
     _new_candidates = []
     _pending = []
     len_new_list = len(instructions) + 1
@@ -215,13 +252,11 @@ def find_all_candidates(
     # level or natural order. This way we can easily decide whether to
     # visit/generate next level, as it is a stop condition in our approach.
     # for load in tqdm(load_instructions, desc="Load ins"):
-    for load in load_instructions:
+    pruned_load_instructions = _prune_ld_ins(packing)
+    for load in pruned_load_instructions:
         args = [packing[-1]]
         __width = load.width
-        # It does not make sense using 256 bits instructions when packing only
-        # 4 elements
-        if __width > packing.c_max_width:
-            continue
+
         if load.maskvec:
             args += [Var("mask_i", f"__m{__width}i")]
         if load.needsregister:
@@ -248,7 +283,7 @@ def exploration_space(packing: PackingT):
     MAX_INS = len(packing) + int(len(packing) / 4)
     print("*" * 80)
     print(
-        f"* Searching packing combinations for: {packing} (max. instructions {MAX_INS}, minimum candidates {MIN_CANDIDATES})"
+        f"* Searching packing combinations for: {packing} (max. instructions {MAX_INS} used, find {MIN_CANDIDATES} candidates at least)"
     )
     print("*" * 80)
 
@@ -257,11 +292,14 @@ def exploration_space(packing: PackingT):
     C = []
     t0 = time.time_ns()
     for n_ins in range(1, MAX_INS):
-        if n_ins < packing.min_instructions - 1:
+        if n_ins < packing.min_instructions:
+            print(
+                f"** Skipping {n_ins:3d} instruction(s), min {packing.min_instructions}"
+            )
             continue
         global FOUND_SOLUTIONS
         FOUND_SOLUTIONS = len(C)
-        print(f"** Using max. {n_ins:3} instruction(s)")
+        print(f"** Using max. {n_ins:3d} instruction(s)")
         _C = find_all_candidates(n_ins, packing, objective)
         n_candidates += len(_C)
         if len(_C) > 0:
@@ -283,14 +321,15 @@ def exploration_space(packing: PackingT):
     return C
 
 
-def generate_all_cases(max_size: int = 8) -> List[PackingT]:
+def generate_all_cases(min_size: int = 1, max_size: int = 8) -> List[PackingT]:
     list_cases = []
-    for i in range(1, max_size + 1):
+    for i in range(min_size, max_size + 1):
         print(f"Generating cases with {i} elements")
         vector_size = 4 if i < 5 else 8
+        new_packing = []
         for c in range(2 ** (i - 1)):
             values = [0] * vector_size
-            values[0] = 10
+            values[0] = 16
             contiguity = (
                 list(map(lambda x: int(x), list(f"{c:0{i-1}b}"))) if i > 1 else []
             )
@@ -298,18 +337,28 @@ def generate_all_cases(max_size: int = 8) -> List[PackingT]:
                 offset = 1 if contiguity[v - 1] == 1 else 10
                 values[v] = values[v - 1] + offset
             values.reverse()
-            packing = PackingT(values, contiguity)
-            list_cases.append(packing)
+            new_packing.append(PackingT(values, contiguity))
+        new_packing.reverse()
+        list_cases.extend(new_packing)
     return list_cases
 
 
 debug = False
 
-if not debug:
-    all_cases = generate_all_cases(2)
-    for case in all_cases:
-        exploration_space(case)
-        FOUND_SOLUTIONS = 0
-else:
-    case = PackingT([7, 5, 3, 0], [0, 0, 0])
-    c = exploration_space(case)
+if __name__ == "__main__":
+    import sys
+
+    start = 1
+    end = 4
+    if len(sys.argv) == 3:
+        start = int(sys.argv[1])
+        end = int(sys.argv[2])
+    if not debug:
+        all_cases = generate_all_cases(start, end)
+        for case in all_cases:
+            exploration_space(case)
+            FOUND_SOLUTIONS = 0
+            N_CHECKS = 0
+    else:
+        case = PackingT([7, 5, 3, 0], [0, 0, 0])
+        c = exploration_space(case)

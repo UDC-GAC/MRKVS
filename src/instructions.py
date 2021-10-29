@@ -16,19 +16,6 @@ from z3 import *
 from sat.x86_sat.parse import *
 from sat.x86_sat.evaluate import ArgsType, InsType, ArgsTypeException
 
-
-def val_to_array(val, elems=8):
-    offset_32b = 0xFFFFFFFF
-    arr = []
-    if isinstance(val, str):
-        val = eval(val)
-    for i in range(elems):
-        new_val = val >> 32 * i
-        arr.append(new_val & offset_32b)
-    arr.reverse()
-    return arr
-
-
 # Custom defined instructions for MACVETH
 _mm_load_ss = ParseOperation(
     "_mm_load_ss",
@@ -89,6 +76,25 @@ _mm256_loadu_ps = ParseOperation(
     "dst[255:224] := a+7; dst[223:192] := a+6; dst[191:160] := a+5; dst[159:128] := a+4; dst[127:96] := a+3; dst[95:64] := a+2; dst[63:32] := a+1; dst[31:0] := a;",
 )
 _mm256_loadu_ps.instype = InsType.LOAD
+_mm256_maskload_ps = ParseOperation(
+    "_mm256_maskload_ps",
+    [("a", "float", ""), ("mask", "__m256i", "")],
+    "dst",
+    "__m256",
+    """
+FOR j := 0 to 7
+i := j*32
+IF mask[i+31]
+    dst[i+31:i] := a+j
+ELSE
+    dst[i+31:i] := 0
+FI
+ENDFOR
+dst[MAX:128] := 0
+""",
+)
+_mm256_maskload_ps.instype = InsType.LOAD
+_mm256_maskload_ps.maskvec = True
 
 load_instructions = [
     globals()[i] for i in dir() if i.startswith("_mm") or i.startswith("_mv")
@@ -174,10 +180,10 @@ full_custom_ops_list = [
 
 regex = "|".join(
     [
-        r"_mm(256|)_blend_ps",
         r"_mm_insert_ps",
         r"_mm256_insertf128_ps",
         r"_mm_move(hl|lh)_ps",
+        r"_mm(256|)_blend_ps",
     ]
 )
 intrinsics = parse_whitelist("sat/data-latest.xml", regex=regex)
