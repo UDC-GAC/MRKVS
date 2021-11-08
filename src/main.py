@@ -39,13 +39,16 @@ Terminology:
 
 """
 
-MIN_CANDIDATES = 2
+MIN_CANDIDATES = 3
 FOUND_SOLUTIONS = 0
 N_CHECKS = 1
 
 
 class MinSolFound(Exception):
     pass
+
+
+AUX_CONDITION = Var(f"aux", f"__m128")
 
 
 def _check_candidate(
@@ -58,8 +61,9 @@ def _check_candidate(
     result, model = check(objective == new_product)
     dprint(objective == new_product)
     if result == sat:
-        if "aux" in model and int(model["aux"], base=16) != 0x0:
-            return unsat
+        # if "aux" in model and int(model["aux"], base=16) != 0x0:
+        #     print(model["aux"])
+        #     return unsat
         print("[DEBUG] Candidate: ", objective == new_product, model)
         return Candidate(instructions + [new_product], model)
     return unsat
@@ -125,11 +129,25 @@ def _gen_new_candidate(
             else:
                 _unsat_candidates.append(_new_ins(*args))
     elif __argstype == ArgsType.REG_MEM:
-        for output in instructions:
-            # Heuristic: attempt blends with 3 different offsets.
-            if __instype == InsType.BLEND:
-                for offset in [0, -1, 1]:
-                    args = [output, packing[-1 - case] + offset] + imm
+        for n_case in range(case, len(packing)):
+            for output in instructions:
+                # Heuristic: attempt blends with 3 different offsets.
+                if __instype == InsType.BLEND:
+                    for offset in [0, -1, 1]:
+                        args = [output, packing[-1 - n_case] + offset] + imm
+                        if (__len_inst >= packing.min_instructions) and (
+                            (
+                                sol := _check_candidate(
+                                    _new_ins(*args), instructions, objective
+                                )
+                            )
+                            is not unsat
+                        ):
+                            return sat, sol
+                    args = [output, packing[-1 - n_case] + offset] + imm
+                    _unsat_candidates.append(_new_ins(*args))
+                else:
+                    args = [output, packing[-1 - n_case]] + imm
                     if (__len_inst >= packing.min_instructions) and (
                         (
                             sol := _check_candidate(
@@ -139,17 +157,8 @@ def _gen_new_candidate(
                         is not unsat
                     ):
                         return sat, sol
-                args = [output, packing[-1 - case] + offset] + imm
-                _unsat_candidates.append(_new_ins(*args))
-            else:
-                args = [output, packing[-1 - case]] + imm
-                if (__len_inst >= packing.min_instructions) and (
-                    (sol := _check_candidate(_new_ins(*args), instructions, objective))
-                    is not unsat
-                ):
-                    return sat, sol
-                else:
-                    _unsat_candidates.append(_new_ins(*args))
+                    else:
+                        _unsat_candidates.append(_new_ins(*args))
     else:
         raise ArgsTypeException
     return unsat, _unsat_candidates
@@ -256,7 +265,7 @@ def _gen_forest_deep_first(
 
     # I guess this is **not** tail-recursion by definition,
     for p in _pending:
-        if len_new_list > n_ins:
+        if len_new_list >= n_ins:
             continue
         _sub_new_candidates = _gen_forest_deep_first(
             case + 1, instructions + [p], packing, objective, n_ins, var_name
@@ -307,7 +316,7 @@ def search_deep_first(
         if _new_candidates == None:
             continue
         __candidates += [i for i in _new_candidates if i not in __candidates]
-        if len(_new_candidates) + len(__candidates) >= MIN_CANDIDATES:
+        if len(__candidates) >= MIN_CANDIDATES:
             break
     return __candidates
 
@@ -418,7 +427,7 @@ def exploration_space(packing: PackingT, var_name: str = "i") -> List:
             full_candidates_list += [*_candidates]
         else:
             print(f"\tNo candidates using {n_ins} instruction(s)")
-        if n_candidates >= MIN_CANDIDATES or n_ins + 1 > packing.max_instructions:
+        if n_candidates >= MIN_CANDIDATES or n_ins + 1 >= packing.max_instructions:
             print(f"*** SEARCH FINISHED WITH {n_candidates} CANDIDATES FOUND")
             break
     t_elapsed = (time.time_ns() - t0) / 1e9

@@ -161,7 +161,6 @@ def get_mem_offset(i, arg, packing):
 
 
 def get_arguments_template(ins, tmp_reg, candidate):
-    print(candidate.packing)
     args = []
     for i in range(len(ins.args)):
         arg = ins.args[i]
