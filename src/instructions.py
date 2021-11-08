@@ -228,3 +228,5 @@ intrinsics = parse_whitelist("sat/data-latest.xml", regex=r"_mm(256|)_set_ps")
 # Wrappers
 set_4_float_elements = intrinsics["_mm_set_ps"]
 set_8_float_elements = intrinsics["_mm256_set_ps"]
+intrinsics = parse_whitelist("sat/data-latest.xml", regex="_mm256_set_m128$")
+set_hi_lo = intrinsics["_mm256_set_m128"]

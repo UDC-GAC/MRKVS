@@ -39,7 +39,7 @@ Terminology:
 
 """
 
-MIN_CANDIDATES = 2
+MIN_CANDIDATES = 1
 FOUND_SOLUTIONS = 0
 N_CHECKS = 1
 

@@ -29,7 +29,7 @@ def max_width(dtype: str = "float", nelems: int = 4):
 
 class PackingT:
     def __repr__(self):
-        return f"{self.packing} ({self.dtype})"
+        return f"{self.packing} {self.contiguity} ({self.dtype})"
 
     def __getitem__(self, idx):
         return self.packing[idx]
@@ -47,8 +47,8 @@ class PackingT:
         self.nnz = len(packing) - packing.count(0)
         self.vector_size = len(self.packing)
         self.contiguity = contiguity
-        self.min_instructions = self.contiguity.count(0)
-        self.max_instructions = self.min_instructions + int(self.vector_size / 4)
+        self.min_instructions = self.contiguity.count(0) + 1
+        self.max_instructions = self.min_instructions + 2 * int(self.vector_size / 4)
         self.dtype = dtype
         self.c_max_width = max_width(dtype, len(packing))
         assert len(contiguity) + 1 == self.nnz
@@ -93,7 +93,7 @@ def print_instruction_template(ins, output, *args):
     else:
         instruction += f"#{output}:REG#,"
     if "loadh" in instruction or "loadl" in instruction:
-        return f"{instruction}#{args[0]}:REG#,&#{args[1]}:MEM#);"
+        return f"{instruction}#{args[0]}:128:REG#,&#{args[1]}:0:MEM#);"
     return instruction + ",".join(args) + ");"
 
 
@@ -104,6 +104,8 @@ def get_register(args, arg, tmp_reg, candidate, f_tmp=(lambda x: x)):
             continue
         model_ok = True
         for i in m:
+            if i not in candidate.model:
+                continue
             model_ok = model_ok and m[i] == candidate.model[i]
         if sat == res and model_ok:
             args += [f_tmp(tmp)]
@@ -146,17 +148,20 @@ def get_arguments(ins, tmp_reg, candidate):
         if not isinstance(arg, Call):
             args += [f"p[{arg}]"]
             continue
-        n_args = len(args)
         args = get_register(args, arg, tmp_reg, candidate)
-        assert n_args + 1 == len(args)
+        # assert n_args + 1 == len(args)
     return args
 
 
 def get_mem_offset(i, arg, packing):
+    if arg in packing:
+        idx = packing.index(arg)
+        return f"#{idx}:0:MEM#"
     return f"#{i}:{int(arg-packing[i])}:MEM#"
 
 
 def get_arguments_template(ins, tmp_reg, candidate):
+    print(candidate.packing)
     args = []
     for i in range(len(ins.args)):
         arg = ins.args[i]
@@ -183,12 +188,7 @@ def get_arguments_template(ins, tmp_reg, candidate):
         if not isinstance(arg, Call):
             args += [get_mem_offset(i, arg, candidate.packing[::-1])]
             continue
-        n_args = len(args)
         args = get_register(args, arg, tmp_reg, candidate)
-        # (lambda x:
-        # f"#{x}:REG#"))
-        # args = get_register(args, arg, tmp_reg, candidate)
-        assert n_args + 1 == len(args)
     return args
 
 
@@ -221,7 +221,6 @@ def generate_code(
     for reg in liveness:
         out = liveness[reg]
         if out[0] == out[1] and (reg != "output" and reg != "#output:REG#"):
-
             del c_instructions[out[0]]
             for w in registers:
                 try:
@@ -232,7 +231,9 @@ def generate_code(
     return registers, c_instructions
 
 
-def generate_micro_benchmark(candidate: Candidate, dtype: str = "float"):
+def generate_micro_benchmark(
+    candidate: Candidate, dtype: str = "float",
+):
     try:
         os.mkdir("codes")
     except FileExistsError:
@@ -251,6 +252,7 @@ def generate_micro_benchmark(candidate: Candidate, dtype: str = "float"):
     file_name = f"codes/rvp_{dtype}_{packing_str}_{candidate.number}.c"
     kernel = f"""#include "macveth_api.h"
 #include "marta_wrapper.h"
+#include <immintrin.h>
 
 static inline void kernel({dtype} *restrict p) {{
     // {candidate.packing}
@@ -266,7 +268,7 @@ static inline void kernel({dtype} *restrict p) {{
         candidate, get_arguments_template, print_instruction, (lambda x: f"#{x}:REG#"),
     )
     # Templates
-    file_name_raw = f"codes/rvp_{dtype}_{packing_str}_{candidate.number}.info"
+    file_name_raw = f"codes/rvp_{dtype}_{packing_str}_{candidate.number}.mrt"
     with open(file_name_raw, "w+") as f:
         f.writelines("\n".join(c_instructions))
 
