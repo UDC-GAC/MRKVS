@@ -238,7 +238,8 @@ def generate_micro_benchmark(
     except FileExistsError:
         pass
     packing_str = (
-        f"{candidate.packing.vector_size}elems_{candidate.packing.nnz}nnz_"
+        # f"{candidate.packing.vector_size}elems_{candidate.packing.nnz}nnz_"
+        f"{candidate.packing.nnz}_"
         + "_".join(list(map(lambda x: str(x), candidate.packing.contiguity)))
     )
     registers, c_instructions = generate_code(candidate)
