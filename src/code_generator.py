@@ -77,7 +77,7 @@ def print_instruction(ins, output, *args):
         instruction += f"{output},"
     if "loadh" in instruction or "loadl" in instruction:
         return f"{instruction}{args[0]},&{args[1]});"
-    return instruction + ",".join(args) + ");"
+    return f"{instruction}{','.join(args)});"
 
 
 def print_instruction_template(ins, output, *args):
@@ -93,8 +93,8 @@ def print_instruction_template(ins, output, *args):
     else:
         instruction += f"#{output}:REG#,"
     if "loadh" in instruction or "loadl" in instruction:
-        return f"{instruction}#{args[0]}:128:REG#,&#{args[1]}:0:MEM#);"
-    return instruction + ",".join(args) + ");"
+        return f"{instruction}#{args[0]}:128:REG#,&#{args[1]}:0:MEM#)"
+    return f"{instruction}{','.join(args)})"
 
 
 def get_register(args, arg, tmp_reg, candidate, f_tmp=(lambda x: x)):
@@ -140,7 +140,10 @@ def get_arguments(ins, tmp_reg, candidate):
                 start = 8 - (int(width / 32))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
-                _tmp = f"_mm{width_str}_set_epi32({_argstmp})"
+                if arg.type == "__m128i":
+                    _tmp = f"_mm{width_str}_set_epi32({_argstmp})"
+                elif arg.type == "__m128":
+                    _tmp = f"_mm{width_str}_set_ps({_argstmp})"
                 args += [_tmp]
                 continue
             args += [new_arg]
@@ -157,7 +160,10 @@ def get_mem_offset(i, arg, packing):
     if arg in packing:
         idx = packing.index(arg)
         return f"#{idx}:0:MEM#"
-    return f"#{i}:{int(arg-packing[i])}:MEM#"
+
+    val = min(packing, key=lambda x: abs(x - arg))
+    idx = packing.index(val)
+    return f"#{idx}:{int(arg-packing[idx])}:MEM#"
 
 
 def get_arguments_template(ins, tmp_reg, candidate):
@@ -174,7 +180,10 @@ def get_arguments_template(ins, tmp_reg, candidate):
                 start = 8 - (int(width / 32))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
-                _tmp = f"_mm{width_str}_set_epi32({_argstmp})"
+                if arg.type == "__m128i":
+                    _tmp = f"_mm{width_str}_set_epi32({_argstmp})"
+                elif arg.type == "__m128":
+                    _tmp = f"_mm{width_str}_set_ps({_argstmp})"
                 args += [_tmp]
                 continue
             if new_arg.startswith("r"):
@@ -237,10 +246,8 @@ def generate_micro_benchmark(
         os.mkdir("codes")
     except FileExistsError:
         pass
-    packing_str = (
-        # f"{candidate.packing.vector_size}elems_{candidate.packing.nnz}nnz_"
-        f"{candidate.packing.nnz}_"
-        + "_".join(list(map(lambda x: str(x), candidate.packing.contiguity)))
+    packing_str = f"{candidate.packing.nnz}_" + "_".join(
+        list(map(lambda x: str(x), candidate.packing.contiguity))
     )
     registers, c_instructions = generate_code(candidate)
     registers_str = ""
@@ -249,7 +256,8 @@ def generate_micro_benchmark(
             continue
         registers_str += f"{k} {', '.join(registers[k])};\n    "
     body_str = registers_str + "\n    ".join(c_instructions)
-    file_name = f"codes/rvp_{dtype}_{packing_str}_{candidate.number}.c"
+    full_name = f"{dtype}_n{packing_str}_{candidate.number}"
+    benchmark_name = f"codes/{full_name}.c"
     kernel = f"""#include "macveth_api.h"
 #include "marta_wrapper.h"
 #include <immintrin.h>
@@ -260,15 +268,15 @@ static inline void kernel({dtype} *restrict p) {{
     DO_NOT_TOUCH(output);
 }}
     """
-    with open(file_name, "w+") as f:
+    with open(benchmark_name, "w+") as f:
         f.write(kernel)
-        print(f"Micro-benchmark written in {file_name}")
+        print(f"Micro-benchmark written in {benchmark_name}")
 
     registers, c_instructions = generate_code(
         candidate, get_arguments_template, print_instruction, (lambda x: f"#{x}:REG#"),
     )
     # Templates
-    file_name_raw = f"codes/rvp_{dtype}_{packing_str}_{candidate.number}.mrt"
+    file_name_raw = f"codes/{full_name}.mrt"
     with open(file_name_raw, "w+") as f:
         f.writelines("\n".join(c_instructions))
 
