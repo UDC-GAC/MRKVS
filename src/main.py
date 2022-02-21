@@ -18,16 +18,19 @@ import itertools as it
 from z3 import sat, unsat
 from sat.x86_sat.evaluate import check, Call, Var
 from code_generator import generate_code, generate_micro_benchmark, Candidate, PackingT
-from instructions import (
+from instructions_double import (
     InsType,
     ArgsType,
     ArgsTypeException,
     load_instructions,
     full_instruction_list,
     move_instruction_list,
-    set_4_float_elements,
-    set_8_float_elements,
-    set_hi_lo,
+#    set_4_float_elements,
+    set_2_double_elements,
+#    set_8_float_elements,
+    set_4_double_elements,
+#    set_hi_lo,
+    set_hi_lo_double,
 )
 from utils import dprint
 
@@ -173,7 +176,7 @@ def _prune_ld_ins(packing: PackingT, case: int = 1) -> list:
         if __width > packing.c_max_width:
             continue
         if sum(packing.contiguity) == 0:
-            if not load.name.endswith("ss"):
+            if not load.name.endswith("sd"):
                 continue
         else:
             if (len(packing.contiguity) >= 1 and packing.contiguity[-1] == 0) or (
@@ -299,7 +302,8 @@ def search_deep_first(
         if load.maskvec:
             args += [Var(f"{var_name}_mask_i", f"__m{__width}i")]
         if load.needsregister or load.instype == InsType.BLEND:
-            args = [Var(f"aux", f"__m{__width}")] + args
+#            args = [Var(f"aux", f"__m{__width}")] + args
+            args = [Var(f"aux", load.params[0].type)] + args # Is it always param 0?
         if load.hasimm:
             args += [Var(var_name, "int")]
         _new_inst = load(*args)
@@ -407,7 +411,7 @@ def search_breadth_first(
 def exploration_space(packing: PackingT, var_name: str = "i") -> List:
     MAX_INS = len(packing) + int(len(packing) / 4)
 
-    objective = globals()[f"set_{len(packing)}_float_elements"](*packing)
+    objective = globals()[f"set_{len(packing)}_{packing.dtype}_elements"](*packing)
     n_candidates = 0
     full_candidates_list = []
     t0 = time.time_ns()
@@ -435,8 +439,9 @@ def exploration_space(packing: PackingT, var_name: str = "i") -> List:
     return full_candidates_list
 
 
-def generate_packing(c: int, i: int, val: int = 16) -> PackingT:
-    vector_size = 4 if i < 5 else 8
+def generate_packing(c: int, i: int, val: int = 16, dtype: str = "float") -> PackingT:
+#    vector_size = 4 if i < 5 else 8
+    vector_size = 2 if i < 3 else 4
     values = [0] * vector_size
     values[0] = val
     contiguity = list(map(lambda x: int(x), list(f"{c:0{i-1}b}"))) if i > 1 else []
@@ -445,16 +450,16 @@ def generate_packing(c: int, i: int, val: int = 16) -> PackingT:
         values[v] = values[v - 1] + offset
     values.reverse()
     contiguity.reverse()
-    return PackingT(values, contiguity)
+    return PackingT(values, contiguity, dtype)
 
 
-def generate_all_packing(min_size: int = 1, max_size: int = 8) -> List[PackingT]:
+def generate_all_packing(min_size: int = 1, max_size: int = 8, dtype: str = "float") -> List[PackingT]:
     list_cases = []
     for i in range(min_size, max_size + 1):
         print(f"Generating cases with {i} elements")
         new_packing = []
         for c in range(2 ** (i - 1)):
-            new_packing.append(generate_packing(c, i))
+            new_packing.append(generate_packing(c, i, dtype=dtype))
         new_packing.reverse()
         list_cases.extend(new_packing)
     return list_cases
@@ -476,7 +481,7 @@ def synthesize_code(packing, full_candidates_list):
         candidate.number = i
         candidate.packing = packing
         generate_code(candidate)
-        generate_micro_benchmark(candidate)
+        generate_micro_benchmark(candidate, dtype=candidate.packing.dtype)
 
 
 debug = False
@@ -486,11 +491,12 @@ if __name__ == "__main__":
 
     start = 1
     end = 4
+    dtype = "double"
     if len(sys.argv) == 3:
         start = int(sys.argv[1])
         end = int(sys.argv[2])
     if not debug:
-        all_packings = generate_all_packing(start, end)
+        all_packings = generate_all_packing(start, end, dtype=dtype)
         for packing in all_packings:
             print("*" * 80)
             print(
@@ -501,8 +507,8 @@ if __name__ == "__main__":
                 high_half = get_sub_packing_from_values(packing.packing[:4])
                 lower_half = get_sub_packing_from_values(packing.packing[4:])
                 print(f"* Dividing into two halves: {high_half.nnz} + {lower_half.nnz}")
-                hi_candidates_list = exploration_space(high_half, "hi")
-                lo_candidates_list = exploration_space(lower_half, "lo")
+                hi_candidates_list = exploration_space(high_half, "hi", dtype)
+                lo_candidates_list = exploration_space(lower_half, "lo", dtype)
                 candidates_list = []
                 for hi, lo in it.product(hi_candidates_list, lo_candidates_list):
                     instructions = lo.instructions + hi.instructions

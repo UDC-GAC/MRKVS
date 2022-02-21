@@ -135,15 +135,19 @@ def get_arguments(ins, tmp_reg, candidate):
                 new_arg = candidate.model[arg.name]
             except KeyError:
                 new_arg = "0x0"
-            if arg.type in ["__m128i", "__m256i", "__m128", "__m256"]:
+            if arg.type in ["__m128i", "__m256i", "__m128", "__m128d", "__m256"]:
                 width = 128 if "__m128" in arg.type else 256
-                start = 8 - (int(width / 32))
+                if arg.type in ["__m128d"]: type_size = 64
+                else: type_size = 32
+                start = 8 - (int(width / type_size))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
-                if arg.type == "__m128i":
+                if arg.type in ["__m128i", "__m256i"]:
                     _tmp = f"_mm{width_str}_set_epi32({_argstmp})"
                 elif arg.type == "__m128":
                     _tmp = f"_mm{width_str}_set_ps({_argstmp})"
+                elif arg.type in ["__m128d", "__m256d"]:
+                    _tmp = f"_mm{width_str}_set_pd({_argstmp})"
                 args += [_tmp]
                 continue
             args += [new_arg]
@@ -177,10 +181,12 @@ def get_arguments_template(ins, tmp_reg, candidate):
                 new_arg = "0x0"
             if arg.type in ["__m128i", "__m256i", "__m128", "__m256"]:
                 width = 128 if "__m128" in arg.type else 256
-                start = 8 - (int(width / 32))
+                if arg.type in ["__m128d"]: type_size = 64
+                else: type_size = 32
+                start = 8 - (int(width / type_size))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
-                if arg.type == "__m128i":
+                if arg.type in ["__m128i", "__m256i"]:
                     _tmp = f"_mm{width_str}_set_epi32({_argstmp})"
                 elif arg.type == "__m128":
                     _tmp = f"_mm{width_str}_set_ps({_argstmp})"
@@ -211,12 +217,12 @@ def generate_code(
     liveness = {}
     instructions = candidate.instructions
     c_instructions = []
-    registers = {"__m128": [], "__m256": []}
+    registers = {"__m128d": [], "__m256d": []}
     for n in range(len(instructions)):
         ins = instructions[n]
         args = f_args(ins, tmp_reg, candidate)
         output = f_reg(f"r{reg_no}" if n + 1 < len(instructions) else "output")
-        registers[f"__m{ins.width}"].append(output)
+        registers[f"__m{ins.width}d"].append(output)
         tmp_reg[output] = ins
         liveness[output] = [n, n]
         reg_no += 1

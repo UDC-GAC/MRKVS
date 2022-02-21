@@ -21,5 +21,11 @@
   __asm volatile("vblendps %1,%2,%3,%0\n" : "+x"(O) : "i"(I), "m"(M), "x"(A));
 #define _mv_blend_mem_ps(O, A, M, I)                                           \
   __asm volatile("vblendps %1,%2,%3,%0\n" : "+x"(O) : "i"(I), "m"(M), "x"(A));
+#define _mv_insert_mem_sd(O, A, M, I) \
+  __asm volatile("vpinsrq %1, %2, %3,%0\n" : "+x"(O) : "i"(I), "m"(M), "x"(A));
+#define _mv256_blend_mem_pd(O, A, M, I) \
+  __asm volatile("vblendpd %1,%2,%3,%0\n" : "+x"(O) : "i"(I), "m"(M), "x"(A));
+#define _mv_blend_mem_pd(O, A, M, I) \
+  __asm volatile("vblendpd %1,%2,%3,%0\n" : "+x"(O) : "i"(I), "m"(M), "x"(A));
 
 #endif /* !_MACVETH_API_H */
