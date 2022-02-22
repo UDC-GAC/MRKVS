@@ -48,7 +48,7 @@ class PackingT:
         self.vector_size = len(self.packing)
         self.contiguity = contiguity
         self.min_instructions = self.contiguity.count(0) + 1
-        self.max_instructions = self.min_instructions + 2 * int(self.vector_size / 4)
+        self.max_instructions = self.min_instructions + 4 * int(self.vector_size / 4)
         self.dtype = dtype
         self.c_max_width = max_width(dtype, len(packing))
         assert len(contiguity) + 1 == self.nnz
@@ -137,8 +137,10 @@ def get_arguments(ins, tmp_reg, candidate):
                 new_arg = "0x0"
             if arg.type in ["__m128i", "__m256i", "__m128", "__m128d", "__m256"]:
                 width = 128 if "__m128" in arg.type else 256
-                if arg.type in ["__m128d"]: type_size = 64
-                else: type_size = 32
+                if arg.type in ["__m128d"]:
+                    type_size = 64
+                else:
+                    type_size = 32
                 start = 8 - (int(width / type_size))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
@@ -181,8 +183,10 @@ def get_arguments_template(ins, tmp_reg, candidate):
                 new_arg = "0x0"
             if arg.type in ["__m128i", "__m256i", "__m128", "__m256"]:
                 width = 128 if "__m128" in arg.type else 256
-                if arg.type in ["__m128d"]: type_size = 64
-                else: type_size = 32
+                if arg.type in ["__m128d"]:
+                    type_size = 64
+                else:
+                    type_size = 32
                 start = 8 - (int(width / type_size))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
@@ -216,7 +220,7 @@ def generate_code(
     tmp_reg = {}
     liveness = {}
     instructions = candidate.instructions
-    c_instructions = []
+    c_instructions = dict()
     registers = {"__m128d": [], "__m256d": []}
     for n in range(len(instructions)):
         ins = instructions[n]
@@ -230,7 +234,7 @@ def generate_code(
             if not i.startswith("r") and not i.startswith("#r"):
                 continue
             liveness[i][1] = n
-        c_instructions.append(f_print(ins, output, *args))
+        c_instructions[n] = f_print(ins, output, *args)
 
     for reg in liveness:
         out = liveness[reg]
@@ -242,7 +246,7 @@ def generate_code(
                 except ValueError:
                     pass
 
-    return registers, c_instructions
+    return registers, c_instructions.values()
 
 
 def generate_micro_benchmark(

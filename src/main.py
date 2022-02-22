@@ -25,11 +25,11 @@ from instructions_double import (
     load_instructions,
     full_instruction_list,
     move_instruction_list,
-#    set_4_float_elements,
+    #    set_4_float_elements,
     set_2_double_elements,
-#    set_8_float_elements,
+    #    set_8_float_elements,
     set_4_double_elements,
-#    set_hi_lo,
+    #    set_hi_lo,
     set_hi_lo_double,
 )
 from utils import dprint
@@ -51,7 +51,15 @@ class MinSolFound(Exception):
     pass
 
 
-AUX_CONDITION = Var(f"aux", f"__m128")
+def _check_args(ins, args):
+    for i in range(len(ins.params)):
+        if not isinstance(args[i], Call):
+            continue
+        if ins.params[i].width != args[i].fn.width:
+            return False
+        if not _check_args(args[i].fn, args[i].args):
+            return False
+    return True
 
 
 def _check_candidate(
@@ -61,7 +69,10 @@ def _check_candidate(
     if N_CHECKS % 100 == 0:
         print(f"[DEBUG] N_CHECKS = {N_CHECKS}")
     N_CHECKS += 1
+    if not _check_args(new_product.fn, new_product.args):
+        return unsat
     result, model = check(objective == new_product)
+    print(objective == new_product)
     dprint(objective == new_product)
     if result == sat:
         # if "aux" in model and int(model["aux"], base=16) != 0x0:
@@ -302,8 +313,8 @@ def search_deep_first(
         if load.maskvec:
             args += [Var(f"{var_name}_mask_i", f"__m{__width}i")]
         if load.needsregister or load.instype == InsType.BLEND:
-#            args = [Var(f"aux", f"__m{__width}")] + args
-            args = [Var(f"aux", load.params[0].type)] + args # Is it always param 0?
+            #            args = [Var(f"aux", f"__m{__width}")] + args
+            args = [Var(f"aux", load.params[0].type)] + args  # Is it always param 0?
         if load.hasimm:
             args += [Var(var_name, "int")]
         _new_inst = load(*args)
@@ -410,6 +421,7 @@ def search_breadth_first(
 
 def exploration_space(packing: PackingT, var_name: str = "i") -> List:
     MAX_INS = len(packing) + int(len(packing) / 4)
+    MAX_INS = 10
 
     objective = globals()[f"set_{len(packing)}_{packing.dtype}_elements"](*packing)
     n_candidates = 0
@@ -440,7 +452,7 @@ def exploration_space(packing: PackingT, var_name: str = "i") -> List:
 
 
 def generate_packing(c: int, i: int, val: int = 16, dtype: str = "float") -> PackingT:
-#    vector_size = 4 if i < 5 else 8
+    #    vector_size = 4 if i < 5 else 8
     vector_size = 2 if i < 3 else 4
     values = [0] * vector_size
     values[0] = val
@@ -453,7 +465,9 @@ def generate_packing(c: int, i: int, val: int = 16, dtype: str = "float") -> Pac
     return PackingT(values, contiguity, dtype)
 
 
-def generate_all_packing(min_size: int = 1, max_size: int = 8, dtype: str = "float") -> List[PackingT]:
+def generate_all_packing(
+    min_size: int = 1, max_size: int = 8, dtype: str = "float"
+) -> List[PackingT]:
     list_cases = []
     for i in range(min_size, max_size + 1):
         print(f"Generating cases with {i} elements")
@@ -484,7 +498,7 @@ def synthesize_code(packing, full_candidates_list):
         generate_micro_benchmark(candidate, dtype=candidate.packing.dtype)
 
 
-debug = False
+debug = True
 
 if __name__ == "__main__":
     import sys
@@ -492,9 +506,11 @@ if __name__ == "__main__":
     start = 1
     end = 4
     dtype = "double"
-    if len(sys.argv) == 3:
+    if len(sys.argv) >= 3:
         start = int(sys.argv[1])
         end = int(sys.argv[2])
+    if len(sys.argv) == 4:
+        debug = bool(int(sys.argv[3]))
     if not debug:
         all_packings = generate_all_packing(start, end, dtype=dtype)
         for packing in all_packings:
@@ -522,5 +538,9 @@ if __name__ == "__main__":
             FOUND_SOLUTIONS = 0
             N_CHECKS = 1
     else:
-        case = PackingT([17, 16, 15, 10], [0, 1, 1])
+        # case = PackingT([17, 16, 15, 10], [0, 1, 1])
+        case = PackingT([0, 36, 26, 16], [0, 0])
+        case.dtype = dtype
+        case.c_max_width = 256
+        case.max_instructions = 10
         c = exploration_space(case)
