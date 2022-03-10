@@ -72,7 +72,7 @@ def _check_candidate(
     if not _check_args(new_product.fn, new_product.args):
         return unsat
     result, model = check(objective == new_product)
-    print(objective == new_product)
+#    print(objective == new_product)
     dprint(objective == new_product)
     if result == sat:
         # if "aux" in model and int(model["aux"], base=16) != 0x0:
@@ -443,12 +443,21 @@ def exploration_space(packing: PackingT, var_name: str = "i") -> List:
             full_candidates_list += [*_candidates]
         else:
             print(f"\tNo candidates using {n_ins} instruction(s)")
-        if n_candidates >= MIN_CANDIDATES or n_ins + 1 >= packing.max_instructions:
+        if n_candidates >= MIN_CANDIDATES or n_ins + 1 > packing.max_instructions:
             print(f"*** SEARCH FINISHED WITH {n_candidates} CANDIDATES FOUND")
             break
     t_elapsed = (time.time_ns() - t0) / 1e9
     print(f"- Time elapsed: {t_elapsed} sec.")
-    return full_candidates_list
+
+    purged_candidates_list = []
+    for i in range(len(full_candidates_list)):
+        for j in range(i+1, len(full_candidates_list)):
+            if full_candidates_list[i] == full_candidates_list[j]:
+                break
+        else:
+            purged_candidates_list.append( full_candidates_list[i] )
+
+    return purged_candidates_list
 
 
 def generate_packing(c: int, i: int, val: int = 16, dtype: str = "float") -> PackingT:
@@ -479,14 +488,14 @@ def generate_all_packing(
     return list_cases
 
 
-def get_sub_packing_from_values(values):
+def get_sub_packing_from_values(values, dtype="float"):
     contiguity = []
     copy_values = list(reversed(values))
     nnz = len(copy_values) - copy_values.count(0)
     for i in range(1, nnz):
         contiguity.insert(0, int(copy_values[i] - 1 == copy_values[i - 1]))
 
-    return PackingT(values, contiguity)
+    return PackingT( values, contiguity, dtype=dtype )
 
 
 def synthesize_code(packing, full_candidates_list):
@@ -494,11 +503,11 @@ def synthesize_code(packing, full_candidates_list):
         candidate = full_candidates_list[i]
         candidate.number = i
         candidate.packing = packing
-        generate_code(candidate)
+#        generate_code(candidate)
         generate_micro_benchmark(candidate, dtype=candidate.packing.dtype)
 
 
-debug = True
+debug = False
 
 if __name__ == "__main__":
     import sys
@@ -519,27 +528,27 @@ if __name__ == "__main__":
                 f"* Searching packing combinations for: {packing} (find {MIN_CANDIDATES} candidates at least)"
             )
             print("*" * 80)
-            if packing.nnz > 4:
-                high_half = get_sub_packing_from_values(packing.packing[:4])
-                lower_half = get_sub_packing_from_values(packing.packing[4:])
+            candidates_list = exploration_space(packing)
+            if len(candidates_list) == 0 and packing.nnz > 2:
+                high_half = get_sub_packing_from_values(packing.packing[:2], dtype=packing.dtype )
+                lower_half = get_sub_packing_from_values(packing.packing[2:], dtype=packing.dtype )
                 print(f"* Dividing into two halves: {high_half.nnz} + {lower_half.nnz}")
-                hi_candidates_list = exploration_space(high_half, "hi", dtype)
-                lo_candidates_list = exploration_space(lower_half, "lo", dtype)
+                hi_candidates_list = exploration_space(high_half, "hi" )
+                lo_candidates_list = exploration_space(lower_half, "lo" )
                 candidates_list = []
                 for hi, lo in it.product(hi_candidates_list, lo_candidates_list):
                     instructions = lo.instructions + hi.instructions
-                    merge_ins = set_hi_lo(hi.instructions[-1], lo.instructions[-1])
+                    merge_ins = set_hi_lo_double(hi.instructions[-1], lo.instructions[-1])
                     instructions.append(merge_ins)
                     new_candidate = Candidate(instructions, lo.model | hi.model)
                     candidates_list.append(new_candidate)
-            else:
-                candidates_list = exploration_space(packing)
             synthesize_code(packing, candidates_list)
             FOUND_SOLUTIONS = 0
             N_CHECKS = 1
     else:
         # case = PackingT([17, 16, 15, 10], [0, 1, 1])
-        case = PackingT([0, 36, 26, 16], [0, 0])
+        # case = PackingT([0, 36, 26, 16], [0, 0])
+        case = PackingT([0,18,17,16], [1,1], dtype="double")
         case.dtype = dtype
         case.c_max_width = 256
         case.max_instructions = 10

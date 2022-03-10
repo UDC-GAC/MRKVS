@@ -62,6 +62,19 @@ class Candidate:
         self.instructions = [] if instructions is None else instructions
         self.model = model
 
+    def __eq__( self, rhs ):
+        if not isinstance( rhs, Candidate ): return False
+
+        for k in self.model.keys():
+            if k not in rhs.model: return False
+            if self.model[k] != rhs.model[k]: return False
+
+        if len(self.instructions) != len(rhs.instructions): return False
+        for i,j in zip( self.instructions, rhs.instructions ):
+            if str(i) != str(j): return False
+
+        return True
+
 
 def print_instruction(ins, output, *args):
     instruction = f"{ins.fn.name}("
@@ -106,7 +119,7 @@ def get_register(args, arg, tmp_reg, candidate, f_tmp=(lambda x: x)):
         for i in m:
             if i not in candidate.model:
                 continue
-            model_ok = model_ok and m[i] == candidate.model[i]
+            model_ok = model_ok and eval(m[i]) == eval(candidate.model[i])
         if sat == res and model_ok:
             args += [f_tmp(tmp)]
             break
@@ -135,12 +148,10 @@ def get_arguments(ins, tmp_reg, candidate):
                 new_arg = candidate.model[arg.name]
             except KeyError:
                 new_arg = "0x0"
-            if arg.type in ["__m128i", "__m256i", "__m128", "__m128d", "__m256"]:
+            if arg.type in ["__m128i", "__m256i", "__m128", "__m128d", "__m256", "__m256d"]:
                 width = 128 if "__m128" in arg.type else 256
-                if arg.type in ["__m128d"]:
-                    type_size = 64
-                else:
-                    type_size = 32
+                if arg.type in ["__m128d","__m256d"]: type_size = 64
+                else: type_size = 32
                 start = 8 - (int(width / type_size))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
@@ -183,10 +194,8 @@ def get_arguments_template(ins, tmp_reg, candidate):
                 new_arg = "0x0"
             if arg.type in ["__m128i", "__m256i", "__m128", "__m256"]:
                 width = 128 if "__m128" in arg.type else 256
-                if arg.type in ["__m128d"]:
-                    type_size = 64
-                else:
-                    type_size = 32
+                if arg.type in ["__m128d"]: type_size = 64
+                else: type_size = 32
                 start = 8 - (int(width / type_size))
                 _argstmp = ",".join(val_to_array(new_arg)[start:])
                 width_str = "" if width == 128 else "256"
