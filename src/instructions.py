@@ -90,7 +90,7 @@ ELSE
     dst[i+31:i] := 0
 FI
 ENDFOR
-dst[MAX:128] := 0
+dst[MAX:256] := 0
 """,
 )
 _mm256_maskload_ps.instype = InsType.LOAD
