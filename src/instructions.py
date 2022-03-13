@@ -46,7 +46,7 @@ _mm_loadh_pi = ParseOperation(
     [("a", "__m128", ""), ("mem", "float", "")],
     "dst",
     "__m128",
-    "dst[127:96] := mem+3; dst[95:64] := mem+2; dst[63:32] := a[63:32]; dst[31:0] := a[31:0];",
+    "dst[127:96] := mem+1; dst[95:64] := mem; dst[63:32] := a[63:32]; dst[31:0] := a[31:0];",
 )
 _mm_loadh_pi.instype = InsType.LOAD
 _mm_maskload_ps = ParseOperation(
